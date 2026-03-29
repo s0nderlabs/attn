@@ -235,7 +235,8 @@ function handleContacts() {
   const contactsList = getContacts()
   const pendingSenders = getPendingSenders()
 
-  let text = `Contacts (${contactsList.length}):\n`
+  let text = `Your address: ${state.address}\n\n`
+  text += `Contacts (${contactsList.length}):\n`
   if (contactsList.length === 0) {
     text += '  (none)\n'
   } else {
