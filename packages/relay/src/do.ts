@@ -38,6 +38,8 @@ export class AgentMailbox extends DurableObject<Env> {
           delivered INTEGER NOT NULL DEFAULT 0
         )
       `)
+      try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN group_id TEXT`) } catch {}
+      try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN group_name TEXT`) } catch {}
     })
   }
 
@@ -61,19 +63,21 @@ export class AgentMailbox extends DurableObject<Env> {
         encrypted: string
         signature: string
         ts: number
+        group_id?: string
+        group_name?: string
       }
 
-      // Store in queue
       this.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO queue (id, from_address, encrypted, signature, ts, delivered) VALUES (?, ?, ?, ?, ?, 0)`,
+        `INSERT OR IGNORE INTO queue (id, from_address, encrypted, signature, ts, delivered, group_id, group_name) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
         msg.id,
         msg.from,
         msg.encrypted,
         msg.signature,
         msg.ts,
+        msg.group_id ?? null,
+        msg.group_name ?? null,
       )
 
-      // Try to deliver to connected sockets
       const sockets = this.ctx.getWebSockets()
       let delivered = false
 
@@ -89,6 +93,7 @@ export class AgentMailbox extends DurableObject<Env> {
                 encrypted: msg.encrypted,
                 signature: msg.signature,
                 ts: msg.ts,
+                ...(msg.group_id ? { group_id: msg.group_id, group_name: msg.group_name } : {}),
               }),
             )
             delivered = true
@@ -197,7 +202,9 @@ export class AgentMailbox extends DurableObject<Env> {
           encrypted: string
           signature: string
           ts: number
-        }>(`SELECT id, from_address, encrypted, signature, ts FROM queue WHERE delivered = 0 ORDER BY ts ASC LIMIT 100`),
+          group_id: string | null
+          group_name: string | null
+        }>(`SELECT id, from_address, encrypted, signature, ts, group_id, group_name FROM queue WHERE delivered = 0 ORDER BY ts ASC LIMIT 100`),
       ]
 
       const deliveredIds: string[] = []
@@ -211,6 +218,7 @@ export class AgentMailbox extends DurableObject<Env> {
               encrypted: row.encrypted,
               signature: row.signature,
               ts: row.ts,
+              ...(row.group_id ? { group_id: row.group_id, group_name: row.group_name } : {}),
             }),
           )
           deliveredIds.push(row.id)

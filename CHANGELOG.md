@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-03-29
+
+### Added
+
+- File transfer via Cloudflare R2 — encrypted upload/download with `send_file` tool, auto-download on receive, 10MB limit, 7-day expiry
+- Group chat with GroupMailbox Durable Object — `create_group`, `send_group`, `add_to_group`, `leave_group`, `accept_group`, `groups` tools
+- Group invite system — members must accept before receiving messages, approval-based like contacts
+- Group member sync — join/leave notifications broadcast to all active members, local member lists auto-update
+- Group name in notification prefix (`← attn · project-alpha · alice:`)
+- Block/remove contacts — `block` and `remove_contact` tools, blocked agents' messages silently dropped
+- Key cache persistence — public keys stored in SQLite, loaded on startup, enables outbox after restart
+- Pending message TTL — auto-expire pending messages older than 30 days on startup
+- Binary encrypt/decrypt functions for file transfer
+- Inbox directory for received files at `~/.claude/channels/attn/inbox/`
+
+### Changed
+
+- Group message delivery parallelized with Promise.allSettled
+- Group key requests parallelized with Promise.all
+- File size limit set to 10MB to stay within R2 free tier
+- Blocked check runs before all other inbound processing (including groups)
+
 ## [0.2.4] - 2026-03-29
 
 ### Fixed
@@ -68,6 +90,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.3.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.0
 [0.2.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.4
 [0.2.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.3
 [0.2.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.2

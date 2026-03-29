@@ -2,7 +2,6 @@ name = "attn-relay"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
-
 workers_dev = true
 
 routes = [
@@ -11,9 +10,18 @@ routes = [
 
 [durable_objects]
 bindings = [
-  { name = "AGENT_MAILBOX", class_name = "AgentMailbox" }
+  { name = "AGENT_MAILBOX", class_name = "AgentMailbox" },
+  { name = "GROUP_MAILBOX", class_name = "GroupMailbox" }
 ]
+
+[[r2_buckets]]
+binding = "FILE_BUCKET"
+bucket_name = "attn-files"
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["AgentMailbox"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["GroupMailbox"]

@@ -25,6 +25,16 @@ export function decryptMessage(privateKey: `0x${string}`, encrypted: string): st
   return new TextDecoder().decode(decrypted)
 }
 
+export function encryptBinary(recipientPublicKey: string, data: Uint8Array): Uint8Array {
+  const pubKeyHex = recipientPublicKey.startsWith('0x') ? recipientPublicKey.slice(2) : recipientPublicKey
+  return encrypt(pubKeyHex, data)
+}
+
+export function decryptBinary(privateKey: `0x${string}`, encrypted: Uint8Array): Uint8Array {
+  const privKeyHex = privateKey.startsWith('0x') ? privateKey.slice(2) : privateKey
+  return decrypt(privKeyHex, encrypted)
+}
+
 function serializeEnvelope(envelope: { id: string; to: string; encrypted: string }): string {
   return JSON.stringify({ id: envelope.id, to: envelope.to, encrypted: envelope.encrypted })
 }

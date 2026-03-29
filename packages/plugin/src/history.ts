@@ -34,6 +34,13 @@ export function initDb(): Database {
   `)
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS blocked (
+      address TEXT PRIMARY KEY,
+      blocked_at TEXT NOT NULL
+    )
+  `)
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS pending (
       id TEXT PRIMARY KEY,
       from_address TEXT NOT NULL,
@@ -52,6 +59,41 @@ export function initDb(): Database {
       signature TEXT NOT NULL,
       ts INTEGER NOT NULL,
       attempts INTEGER DEFAULT 0
+    )
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS key_cache (
+      address TEXT PRIMARY KEY,
+      public_key TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS groups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS group_members (
+      group_id TEXT NOT NULL,
+      address TEXT NOT NULL,
+      name TEXT,
+      PRIMARY KEY (group_id, address)
+    )
+  `)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS group_invites (
+      group_id TEXT PRIMARY KEY,
+      group_name TEXT NOT NULL,
+      from_address TEXT NOT NULL,
+      members_json TEXT NOT NULL,
+      ts INTEGER NOT NULL
     )
   `)
 
@@ -129,6 +171,40 @@ export function removeContact(address: string): void {
   d.run(`DELETE FROM contacts WHERE address = ?`, [address.toLowerCase()])
 }
 
+// --- Blocked ---
+
+export function blockContact(address: string): void {
+  const d = initDb()
+  d.run(
+    `INSERT OR IGNORE INTO blocked (address, blocked_at) VALUES (?, ?)`,
+    [address.toLowerCase(), new Date().toISOString()],
+  )
+  d.run(`DELETE FROM contacts WHERE address = ?`, [address.toLowerCase()])
+  d.run(`DELETE FROM pending WHERE from_address = ?`, [address.toLowerCase()])
+}
+
+export function unblockContact(address: string): void {
+  const d = initDb()
+  d.run(`DELETE FROM blocked WHERE address = ?`, [address.toLowerCase()])
+}
+
+export function isBlocked(address: string): boolean {
+  const d = initDb()
+  const row = d
+    .query<{ address: string }, [string]>(`SELECT address FROM blocked WHERE address = ?`)
+    .get(address.toLowerCase())
+  return !!row
+}
+
+export function getBlocked(): Array<{ address: string; blocked_at: string }> {
+  const d = initDb()
+  return d
+    .query<{ address: string; blocked_at: string }, []>(
+      `SELECT address, blocked_at FROM blocked ORDER BY blocked_at DESC`,
+    )
+    .all()
+}
+
 // --- Pending ---
 
 export function savePending(msg: {
@@ -193,6 +269,13 @@ export function getPendingSenders(): Array<{ from_address: string; count: number
     .all()
 }
 
+export function expirePending(maxAgeMs: number): number {
+  const d = initDb()
+  const cutoff = Date.now() - maxAgeMs
+  const result = d.run(`DELETE FROM pending WHERE ts < ?`, [cutoff])
+  return result.changes
+}
+
 // --- Outbox ---
 
 export function saveOutbox(msg: {
@@ -234,4 +317,133 @@ export function deleteOutbox(id: string): void {
 export function incrementOutboxAttempts(id: string): void {
   const d = initDb()
   d.run(`UPDATE outbox SET attempts = attempts + 1 WHERE id = ?`, [id])
+}
+
+// --- Key Cache ---
+
+export function saveKeyCache(address: string, publicKey: string): void {
+  const d = initDb()
+  d.run(
+    `INSERT INTO key_cache (address, public_key, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(address) DO UPDATE SET public_key = excluded.public_key, updated_at = excluded.updated_at`,
+    [address.toLowerCase(), publicKey, new Date().toISOString()],
+  )
+}
+
+export function getKeyCache(address: string): string | null {
+  const d = initDb()
+  const row = d
+    .query<{ public_key: string }, [string]>(`SELECT public_key FROM key_cache WHERE address = ?`)
+    .get(address.toLowerCase())
+  return row?.public_key ?? null
+}
+
+export function getAllKeyCache(): Array<{ address: string; public_key: string }> {
+  const d = initDb()
+  return d
+    .query<{ address: string; public_key: string }, []>(`SELECT address, public_key FROM key_cache`)
+    .all()
+}
+
+// --- Groups ---
+
+export function createGroup(id: string, name: string, members: Array<{ address: string; name?: string }>): void {
+  const d = initDb()
+  d.run(
+    `INSERT OR IGNORE INTO groups (id, name, created_at) VALUES (?, ?, ?)`,
+    [id, name, new Date().toISOString()],
+  )
+  for (const m of members) {
+    d.run(
+      `INSERT OR IGNORE INTO group_members (group_id, address, name) VALUES (?, ?, ?)`,
+      [id, m.address.toLowerCase(), m.name ?? null],
+    )
+  }
+}
+
+export function getGroups(): Array<{ id: string; name: string; created_at: string; member_count: number }> {
+  const d = initDb()
+  return d
+    .query<{ id: string; name: string; created_at: string; member_count: number }, []>(
+      `SELECT g.id, g.name, g.created_at, COUNT(gm.address) as member_count
+       FROM groups g LEFT JOIN group_members gm ON g.id = gm.group_id
+       GROUP BY g.id ORDER BY g.created_at DESC`,
+    )
+    .all()
+}
+
+export function getGroupMembers(groupId: string): Array<{ address: string; name: string | null }> {
+  const d = initDb()
+  return d
+    .query<{ address: string; name: string | null }, [string]>(
+      `SELECT address, name FROM group_members WHERE group_id = ?`,
+    )
+    .all(groupId)
+}
+
+export function getGroupName(groupId: string): string | null {
+  const d = initDb()
+  const row = d
+    .query<{ name: string }, [string]>(`SELECT name FROM groups WHERE id = ?`)
+    .get(groupId)
+  return row?.name ?? null
+}
+
+export function addGroupMember(groupId: string, address: string, name?: string): void {
+  const d = initDb()
+  d.run(
+    `INSERT OR IGNORE INTO group_members (group_id, address, name) VALUES (?, ?, ?)`,
+    [groupId, address.toLowerCase(), name ?? null],
+  )
+}
+
+export function removeGroupMember(groupId: string, address: string): void {
+  const d = initDb()
+  d.run(
+    `DELETE FROM group_members WHERE group_id = ? AND address = ?`,
+    [groupId, address.toLowerCase()],
+  )
+}
+
+export function deleteGroup(groupId: string): void {
+  const d = initDb()
+  d.run(`DELETE FROM group_members WHERE group_id = ?`, [groupId])
+  d.run(`DELETE FROM groups WHERE id = ?`, [groupId])
+}
+
+// --- Group Invites ---
+
+export function saveGroupInvite(invite: {
+  group_id: string
+  group_name: string
+  from_address: string
+  members: string[]
+  ts: number
+}): void {
+  const d = initDb()
+  d.run(
+    `INSERT OR REPLACE INTO group_invites (group_id, group_name, from_address, members_json, ts) VALUES (?, ?, ?, ?, ?)`,
+    [invite.group_id, invite.group_name, invite.from_address.toLowerCase(), JSON.stringify(invite.members), invite.ts],
+  )
+}
+
+export function getGroupInvites(): Array<{
+  group_id: string
+  group_name: string
+  from_address: string
+  members: string[]
+  ts: number
+}> {
+  const d = initDb()
+  return d
+    .query<{ group_id: string; group_name: string; from_address: string; members_json: string; ts: number }, []>(
+      `SELECT group_id, group_name, from_address, members_json, ts FROM group_invites ORDER BY ts DESC`,
+    )
+    .all()
+    .map(row => ({ ...row, members: JSON.parse(row.members_json) }))
+}
+
+export function deleteGroupInvite(groupId: string): void {
+  const d = initDb()
+  d.run(`DELETE FROM group_invites WHERE group_id = ?`, [groupId])
 }

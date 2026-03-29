@@ -3,7 +3,7 @@ export type ServerMessage =
   | { type: 'challenge'; nonce: string }
   | { type: 'auth_ok'; address: string }
   | { type: 'auth_error'; error: string }
-  | { type: 'message'; id: string; from: string; encrypted: string; signature: string; ts: number }
+  | { type: 'message'; id: string; from: string; encrypted: string; signature: string; ts: number; group_id?: string; group_name?: string }
   | { type: 'key_response'; address: string; publicKey: string | null }
   | { type: 'received'; id: string }
   | { type: 'delivered'; id: string }

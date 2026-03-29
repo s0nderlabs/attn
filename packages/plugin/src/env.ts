@@ -12,6 +12,17 @@ export function getRelayUrl(): string {
   return process.env.ATTN_RELAY_URL ?? DEFAULT_RELAY_URL
 }
 
+export function getRelayHttpUrl(): string {
+  const wsUrl = getRelayUrl()
+  return wsUrl.replace('wss://', 'https://').replace('ws://', 'http://').replace(/\/ws$/, '')
+}
+
+export function getInboxDir(): string {
+  const dir = join(getStateDir(), 'inbox')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 export function loadEnvFile(): void {
   const envFile = join(getStateDir(), ENV_FILE_NAME)
   try {
