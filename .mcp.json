@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "attn": {
+      "command": "bun",
+      "args": ["run", "packages/plugin/index.ts"],
+      "env": {
+        "ATTN_RELAY_URL": "ws://localhost:8787/ws"
+      }
+    }
+  }
+}

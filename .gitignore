@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+.wrangler/
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# OS
+.DS_Store
+
+# Claude context (local only)
+.claude/
+CLAUDE.md
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Logs
+*.log

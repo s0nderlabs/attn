@@ -1,0 +1,6 @@
+export const CHANNEL_NAME = 'attn'
+export const CHANNEL_VERSION = '0.1.0'
+export const DEFAULT_RELAY_URL = 'wss://attn-relay.s0nderlabs.workers.dev/ws'
+export const STATE_DIR_NAME = 'attn'
+export const HISTORY_DB_NAME = 'history.db'
+export const ENV_FILE_NAME = '.env'

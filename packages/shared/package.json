@@ -1,0 +1,11 @@
+{
+  "name": "@attn/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./messages": "./src/messages.ts",
+    "./constants": "./src/constants.ts"
+  }
+}
