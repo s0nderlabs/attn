@@ -41,6 +41,12 @@ export class AgentMailbox extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    // Probabilistic TTL cleanup (5% chance per request)
+    if (Math.random() < 0.05) {
+      const alarm = await this.ctx.storage.getAlarm()
+      if (!alarm) await this.ctx.storage.setAlarm(Date.now() + 60_000)
+    }
+
     const url = new URL(request.url)
 
     // Internal: deliver a message to this agent's mailbox (only callable from other DOs)
@@ -281,6 +287,9 @@ export class AgentMailbox extends DurableObject<Env> {
       case 'ack': {
         const messageId = msg.id as string
         this.ctx.storage.sql.exec(`DELETE FROM queue WHERE id = ?`, messageId)
+        // Schedule cleanup since delivered messages were just modified
+        const alarm = await this.ctx.storage.getAlarm()
+        if (!alarm) await this.ctx.storage.setAlarm(Date.now() + 60_000)
         break
       }
 
@@ -320,6 +329,14 @@ export class AgentMailbox extends DurableObject<Env> {
       default:
         ws.send(JSON.stringify({ type: 'error', error: `Unknown message type: ${msg.type}` }))
     }
+  }
+
+  async alarm(): Promise<void> {
+    const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000
+    const now = Date.now()
+    this.ctx.storage.sql.exec(`DELETE FROM queue WHERE ts < ? AND delivered = 1`, now - SEVEN_DAYS)
+    this.ctx.storage.sql.exec(`DELETE FROM queue WHERE ts < ?`, now - THIRTY_DAYS)
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {

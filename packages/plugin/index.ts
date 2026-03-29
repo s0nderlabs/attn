@@ -32,8 +32,8 @@ const mcp = await connectMcp()
 
 // 4. Connect to relay
 const relayUrl = getRelayUrl()
-connectToRelay(relayUrl, (from, plaintext, id, ts) => {
-  notifyInbound(mcp, from, plaintext, id, ts)
+connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?) => {
+  notifyInbound(mcp, from, plaintext, id, ts, trust, agentName)
 })
 
 // 5. Shutdown handlers

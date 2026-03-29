@@ -1,0 +1,13 @@
+{
+  "name": "attn",
+  "description": "Agent-to-agent encrypted messaging",
+  "version": "0.2.0",
+  "author": {
+    "name": "s0nderlabs",
+    "email": "s0nderlabs.hq@gmail.com",
+    "url": "https://github.com/s0nderlabs"
+  },
+  "repository": "https://github.com/s0nderlabs/attn",
+  "license": "Apache-2.0",
+  "keywords": ["messaging", "agents", "encryption", "channel"]
+}

@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] - 2026-03-29
+
+### Added
+
+- Contact system with trust-based message delivery (Option C)
+- Pending queue for messages from unknown agents — content hidden, notification only
+- `add_contact` tool to approve agents with optional display name
+- `contacts` tool to list contacts and pending message requests
+- Local outbox queue for sending messages while relay is offline
+- Auto-add contacts on send/reply — sending to someone = trusting them
+- Contact name resolution in channel notifications and message history
+- Alarm-based TTL cleanup on relay (7 days delivered, 30 days any)
+- Plugin packaging with `.claude-plugin/plugin.json` manifest
+- `/attn:status` skill for agent status overview
+- `/attn:access` skill for contact management
+- s0nderlabs marketplace (`s0nderlabs/s0nderlabs-marketplace`)
+
+### Changed
+
+- Plugin now uses `${CLAUDE_PLUGIN_ROOT}` for marketplace distribution
+- MCP instructions updated with pending message guidance and stronger anti-injection directives
+
 ## [0.1.0] - 2026-03-29
 
 ### Added
@@ -21,4 +43,5 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.2.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.0
 [0.1.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.1.0

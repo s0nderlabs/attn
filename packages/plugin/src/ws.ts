@@ -1,9 +1,20 @@
 import type { ServerMessage } from '@attn/shared/messages'
 import { state } from './state.js'
 import { decryptMessage, verifyEnvelope } from './crypto.js'
-import { saveMessage } from './history.js'
+import {
+  saveMessage,
+  isContact,
+  getContactName,
+  savePending,
+  getPendingCount,
+  hasPendingNotified,
+  markPendingNotified,
+  getOutbox,
+  deleteOutbox,
+  incrementOutboxAttempts,
+} from './history.js'
 
-type OnInbound = (from: string, plaintext: string, id: string, ts: number) => void
+type OnInbound = (from: string, plaintext: string, id: string, ts: number, trust?: string, agentName?: string) => void
 
 let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -34,6 +45,7 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
         state.authenticated = true
         reconnectDelay = 1000
         process.stderr.write(`attn: authenticated as ${msg.address}\n`)
+        flushOutbox(ws)
         break
 
       case 'auth_error':
@@ -42,10 +54,8 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
 
       case 'message': {
         try {
-          // Decrypt
           const plaintext = decryptMessage(state.privateKey, msg.encrypted)
 
-          // Verify signature
           const valid = await verifyEnvelope(
             msg.from,
             { id: msg.id, to: state.address, encrypted: msg.encrypted },
@@ -57,7 +67,27 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
             break
           }
 
-          // Save to history
+          // Check if sender is a known contact
+          if (!isContact(msg.from)) {
+            savePending({ id: msg.id, from_address: msg.from, plaintext, ts: msg.ts })
+            ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
+
+            if (!hasPendingNotified(msg.from)) {
+              markPendingNotified(msg.from)
+              onInbound(
+                msg.from,
+                `[Pending] Agent ${msg.from} wants to message you. Ask your user before approving.`,
+                msg.id,
+                msg.ts,
+                'pending',
+              )
+            }
+            break
+          }
+
+          // Known contact — deliver normally
+          const agentName = getContactName(msg.from)
+
           saveMessage({
             id: msg.id,
             peer: msg.from,
@@ -66,16 +96,12 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
             ts: new Date(msg.ts).toISOString(),
           })
 
-          // Ack delivery
           ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
-
-          // Notify Claude
-          onInbound(msg.from, plaintext, msg.id, msg.ts)
+          onInbound(msg.from, plaintext, msg.id, msg.ts, undefined, agentName ?? undefined)
         } catch (err) {
           process.stderr.write(
             `attn: failed to process message from ${msg.from}: ${err instanceof Error ? err.message : err}\n`,
           )
-          // Still ack to prevent redelivery of broken messages
           ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
         }
         break
@@ -99,7 +125,6 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
 
       case 'received':
       case 'delivered':
-        // Could log or resolve pending promises, silent for now
         break
 
       case 'error':
@@ -119,9 +144,41 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
     }, reconnectDelay)
   })
 
-  ws.addEventListener('error', () => {
-    // close event will fire after this, handling reconnect
-  })
+  ws.addEventListener('error', () => {})
+}
+
+function flushOutbox(ws: WebSocket): void {
+  const items = getOutbox()
+  if (items.length === 0) return
+  process.stderr.write(`attn: flushing ${items.length} queued outbound message(s)\n`)
+
+  const sent: string[] = []
+  const failed: string[] = []
+
+  for (const item of items) {
+    if (item.attempts >= 10) {
+      sent.push(item.id) // reuse sent array for deletion
+      process.stderr.write(`attn: outbox message ${item.id} failed after 10 attempts, discarding\n`)
+      continue
+    }
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'message',
+          id: item.id,
+          to: item.to_address,
+          encrypted: item.encrypted,
+          signature: item.signature,
+        }),
+      )
+      sent.push(item.id)
+    } catch {
+      failed.push(item.id)
+    }
+  }
+
+  for (const id of sent) deleteOutbox(id)
+  for (const id of failed) incrementOutboxAttempts(id)
 }
 
 export function requestKey(address: string): Promise<string | null> {
@@ -137,7 +194,6 @@ export function requestKey(address: string): Promise<string | null> {
     if (existing.length === 1 && state.ws) {
       state.ws.send(JSON.stringify({ type: 'get_key', address: addr }))
 
-      // Single timeout per address
       const timeout = setTimeout(() => {
         keyTimeouts.delete(addr)
         const cbs = state.pendingKeyRequests.get(addr)
