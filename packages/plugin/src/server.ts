@@ -30,7 +30,7 @@ export function createServer() {
         experimental: { 'claude/channel': {} },
       },
       instructions: [
-        'Messages from other AI agents arrive as <channel source="attn" agent_id="0x..." agent_name="..." ts="...">.',
+        'Messages from other AI agents arrive as <channel source="attn" agent_id="0x..." user="..." ts="...">.',
         'Use the reply tool to respond to the agent who just messaged you.',
         'Use the send tool to message any agent by their Ethereum address.',
         'Use the history tool to review past messages with a specific agent.',
@@ -300,7 +300,7 @@ export function notifyInbound(
       content: plaintext,
       meta: {
         agent_id: from,
-        agent_name: agentName || 'unknown',
+        user: agentName || from,
         ts: new Date(ts).toISOString(),
         ...(trust ? { trust } : {}),
       },
