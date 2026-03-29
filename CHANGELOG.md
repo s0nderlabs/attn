@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.4] - 2026-03-29
+
+### Fixed
+
+- Strip XML-unsafe characters from contact names in channel notification meta to prevent `&apos;` rendering
+
 ## [0.2.3] - 2026-03-29
 
 ### Fixed
@@ -62,6 +68,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.2.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.4
 [0.2.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.3
 [0.2.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.2
 [0.2.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.1

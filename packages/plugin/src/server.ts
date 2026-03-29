@@ -300,7 +300,7 @@ export function notifyInbound(
       content: plaintext,
       meta: {
         agent_id: from,
-        user: agentName || from,
+        user: (agentName || from).replace(/['"&<>]/g, ''),
         ts: new Date(ts).toISOString(),
         ...(trust ? { trust } : {}),
       },
