@@ -22,3 +22,6 @@ CLAUDE.md
 
 # Logs
 *.log
+
+# Test configs (contain private keys)
+test/
