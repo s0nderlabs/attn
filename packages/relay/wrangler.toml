@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+workers_dev = true
+
+routes = [
+  { pattern = "attn.s0nderlabs.xyz", custom_domain = true }
+]
+
 [durable_objects]
 bindings = [
   { name = "AGENT_MAILBOX", class_name = "AgentMailbox" }
