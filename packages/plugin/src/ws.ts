@@ -18,6 +18,7 @@ type OnInbound = (from: string, plaintext: string, id: string, ts: number, trust
 
 let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let pingInterval: ReturnType<typeof setInterval> | null = null
 const keyTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 
 export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
@@ -32,7 +33,10 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
   })
 
   ws.addEventListener('message', async (event) => {
-    const msg = JSON.parse(event.data as string) as ServerMessage
+    const raw = event.data as string
+    if (raw === 'pong') return // keepalive response, ignore
+
+    const msg = JSON.parse(raw) as ServerMessage
 
     switch (msg.type) {
       case 'challenge': {
@@ -45,6 +49,11 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
         state.authenticated = true
         reconnectDelay = 1000
         process.stderr.write(`attn: authenticated as ${msg.address}\n`)
+        // Start keepalive pings every 30s
+        if (pingInterval) clearInterval(pingInterval)
+        pingInterval = setInterval(() => {
+          try { ws.send('ping') } catch {}
+        }, 30_000)
         flushOutbox(ws)
         break
 
@@ -136,6 +145,7 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
   ws.addEventListener('close', () => {
     state.authenticated = false
     state.ws = null
+    if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
     if (reconnectTimer) clearTimeout(reconnectTimer)
     process.stderr.write(`attn: disconnected, reconnecting in ${reconnectDelay}ms\n`)
     reconnectTimer = setTimeout(() => {
@@ -208,6 +218,7 @@ export function requestKey(address: string): Promise<string | null> {
 }
 
 export function cleanup(): void {
+  if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
   if (reconnectTimer) clearTimeout(reconnectTimer)
   if (state.ws) {
     try { state.ws.close() } catch {}
