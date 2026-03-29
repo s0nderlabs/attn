@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.2] - 2026-03-29
+
+### Fixed
+
+- Added WebSocket keepalive ping/pong (every 30s) to prevent idle disconnects
+- Relay DO now auto-responds to ping frames via `setWebSocketAutoResponse`
+
 ## [0.2.1] - 2026-03-29
 
 ### Fixed
@@ -49,6 +56,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.2.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.2
 [0.2.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.1
 [0.2.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.0
 [0.1.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.1.0
