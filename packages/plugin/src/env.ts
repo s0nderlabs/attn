@@ -26,7 +26,7 @@ export function getInboxDir(): string {
 export function loadEnvFile(): void {
   const envFile = join(getStateDir(), ENV_FILE_NAME)
   try {
-    chmodSync(envFile, 0o600)
+    try { chmodSync(envFile, 0o600) } catch {} // no-op on Windows
     for (const line of readFileSync(envFile, 'utf8').split('\n')) {
       const m = line.match(/^(\w+)=(.*)$/)
       if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
@@ -52,7 +52,9 @@ export function resolvePrivateKey(): `0x${string}` {
   const stateDir = getStateDir()
 
   mkdirSync(stateDir, { recursive: true })
-  writeFileSync(join(stateDir, ENV_FILE_NAME), `ATTN_PRIVATE_KEY=${privateKey}\n`, { mode: 0o600 })
+  const envPath = join(stateDir, ENV_FILE_NAME)
+  writeFileSync(envPath, `ATTN_PRIVATE_KEY=${privateKey}\n`)
+  try { chmodSync(envPath, 0o600) } catch {} // no-op on Windows
 
   process.stderr.write(`attn: Generated new agent identity\n`)
   process.stderr.write(`attn: Address: ${account.address}\n`)

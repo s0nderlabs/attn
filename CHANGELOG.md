@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.3] - 2026-03-30
+
+### Fixed
+
+- Windows compatibility: wrapped `chmod` calls in try/catch so plugin works on Windows where chmod is unsupported
+
 ## [0.3.2] - 2026-03-30
 
 ### Fixed
@@ -113,6 +119,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.3.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.3
 [0.3.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.2
 [0.3.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.1
 [0.3.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.0
