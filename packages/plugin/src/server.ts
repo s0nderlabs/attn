@@ -4,7 +4,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import { CHANNEL_NAME, CHANNEL_VERSION } from '@attn/shared/constants'
+import { CHANNEL_NAME, CHANNEL_VERSION } from '../../shared/src/constants.js'
 import { state } from './state.js'
 import { encryptMessage, encryptBinary, signEnvelope } from './crypto.js'
 import {

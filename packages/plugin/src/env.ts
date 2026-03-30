@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts'
-import { STATE_DIR_NAME, ENV_FILE_NAME, DEFAULT_RELAY_URL } from '@attn/shared/constants'
+import { STATE_DIR_NAME, ENV_FILE_NAME, DEFAULT_RELAY_URL } from '../../shared/src/constants.js'
 
 export function getStateDir(): string {
   return process.env.ATTN_STATE_DIR ?? join(homedir(), '.claude', 'channels', STATE_DIR_NAME)

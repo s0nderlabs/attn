@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.4] - 2026-03-30
+
+### Fixed
+
+- Windows: replaced workspace dependency (`@attn/shared`) with relative imports to avoid symlink permission issues on Windows
+
 ## [0.3.3] - 2026-03-30
 
 ### Fixed
@@ -119,6 +125,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.3.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.4
 [0.3.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.3
 [0.3.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.2
 [0.3.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.1
