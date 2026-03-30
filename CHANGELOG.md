@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.1] - 2026-03-30
+
+### Added
+
+- EIP-191 signed request authentication on all relay HTTP endpoints (upload, groups, members)
+- `decline_group` tool to reject group invitations
+- `kick_from_group` tool for group admins to remove members
+- `transfer_group_admin` tool to transfer admin role
+- Online/offline status indicator in `contacts` tool output
+- Batch `/status` endpoint on relay for efficient presence checks
+- `/transfer` handler on GroupMailbox DO with admin verification
+
+### Changed
+
+- All plugin HTTP requests to relay now use signed headers (`X-Attn-Address`, `X-Attn-Timestamp`, `X-Attn-Signature`)
+- Unauthenticated requests to protected endpoints return 401
+
 ## [0.3.0] - 2026-03-29
 
 ### Added
@@ -90,6 +107,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.3.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.1
 [0.3.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.0
 [0.2.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.4
 [0.2.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.3

@@ -33,6 +33,21 @@ import {
 import { requestKey } from './ws.js'
 import { getRelayHttpUrl, getInboxDir } from './env.js'
 
+async function signedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const parsed = new URL(url)
+  const method = options.method ?? 'GET'
+  const timestamp = Date.now().toString()
+  const nonce = `${method}:${parsed.pathname}:${timestamp}`
+  const signature = await state.account!.signMessage({ message: nonce })
+
+  const headers = new Headers(options.headers)
+  headers.set('X-Attn-Address', state.address)
+  headers.set('X-Attn-Timestamp', timestamp)
+  headers.set('X-Attn-Signature', signature)
+
+  return fetch(url, { ...options, headers })
+}
+
 let mcpInstance: Server | null = null
 
 export function createServer() {
@@ -228,6 +243,41 @@ export function createServer() {
         },
       },
       {
+        name: 'decline_group',
+        description: 'Decline a group invitation.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            group_id: { type: 'string', description: 'Group ID from the invite' },
+          },
+          required: ['group_id'],
+        },
+      },
+      {
+        name: 'kick_from_group',
+        description: 'Kick a member from a group. Only the group admin can do this.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            group_id: { type: 'string', description: 'Group ID' },
+            address: { type: 'string', description: 'Agent Ethereum address to kick (0x...)' },
+          },
+          required: ['group_id', 'address'],
+        },
+      },
+      {
+        name: 'transfer_group_admin',
+        description: 'Transfer group admin role to another member.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            group_id: { type: 'string', description: 'Group ID' },
+            address: { type: 'string', description: 'Agent Ethereum address of the new admin (0x...)' },
+          },
+          required: ['group_id', 'address'],
+        },
+      },
+      {
         name: 'groups',
         description: 'List your groups, pending invites, and their members.',
         inputSchema: {
@@ -259,7 +309,7 @@ export function createServer() {
         case 'block':
           return handleBlock(args.address as string, args.unblock as boolean | undefined)
         case 'contacts':
-          return handleContacts()
+          return await handleContacts()
         case 'create_group':
           return await handleCreateGroup(args.name as string, args.members as string[])
         case 'send_group':
@@ -270,8 +320,14 @@ export function createServer() {
           return await handleLeaveGroup(args.group_id as string)
         case 'accept_group':
           return await handleAcceptGroup(args.group_id as string)
+        case 'decline_group':
+          return await handleDeclineGroup(args.group_id as string)
+        case 'kick_from_group':
+          return await handleKickFromGroup(args.group_id as string, args.address as string)
+        case 'transfer_group_admin':
+          return await handleTransferAdmin(args.group_id as string, args.address as string)
         case 'groups':
-          return handleGroups()
+          return await handleGroups()
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${req.params.name}` }], isError: true }
       }
@@ -370,9 +426,9 @@ async function handleSendFile(to: string, path: string) {
 
   const fileKey = crypto.randomUUID()
   const relayBase = getRelayHttpUrl()
-  const uploadResp = await fetch(`${relayBase}/upload`, {
+  const uploadResp = await signedFetch(`${relayBase}/upload`, {
     method: 'POST',
-    body: encryptedBlob,
+    body: encryptedBlob as unknown as BodyInit,
     headers: { 'X-File-Key': fileKey },
   })
 
@@ -443,10 +499,24 @@ function handleBlock(address: string, unblock?: boolean) {
   return { content: [{ type: 'text', text: `Blocked ${address}. All messages from them will be silently dropped.` }] }
 }
 
-function handleContacts() {
+async function handleContacts() {
   const contactsList = getContacts()
   const pendingSenders = getPendingSenders()
   const blockedList = getBlocked()
+
+  // Fetch online status for all contacts
+  let statusMap: Record<string, { online: boolean }> = {}
+  if (contactsList.length > 0) {
+    try {
+      const relayBase = getRelayHttpUrl()
+      const resp = await fetch(`${relayBase}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ addresses: contactsList.map(c => c.address) }),
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (resp.ok) statusMap = (await resp.json()) as Record<string, { online: boolean }>
+    } catch {}
+  }
 
   let text = `Your address: ${state.address}\n\n`
   text += `Contacts (${contactsList.length}):\n`
@@ -455,7 +525,8 @@ function handleContacts() {
   } else {
     for (const c of contactsList) {
       const label = c.name ? `${c.name} — ${c.address}` : c.address
-      text += `  ${label} (added ${c.added_at.split('T')[0]})\n`
+      const status = statusMap[c.address]?.online ? '[online]' : '[offline]'
+      text += `  ${label} ${status} (added ${c.added_at.split('T')[0]})\n`
     }
   }
 
@@ -500,7 +571,7 @@ async function handleCreateGroup(name: string, members: string[]) {
   createGroup(id, name, uniqueMembers.map(addr => ({ address: addr })))
 
   const relayBase = getRelayHttpUrl()
-  const resp = await fetch(`${relayBase}/groups`, {
+  const resp = await signedFetch(`${relayBase}/groups`, {
     method: 'POST',
     body: JSON.stringify({ id, name, members: uniqueMembers, admin: state.address }),
     headers: { 'Content-Type': 'application/json' },
@@ -540,7 +611,7 @@ async function handleSendGroup(groupId: string, message: string) {
 
   const id = crypto.randomUUID()
   const relayBase = getRelayHttpUrl()
-  const resp = await fetch(`${relayBase}/groups/${groupId}/send`, {
+  const resp = await signedFetch(`${relayBase}/groups/${groupId}/send`, {
     method: 'POST',
     body: JSON.stringify({
       id,
@@ -569,7 +640,7 @@ async function handleAddToGroup(groupId: string, address: string, name?: string)
   addGroupMember(groupId, address, name)
 
   const relayBase = getRelayHttpUrl()
-  const resp = await fetch(`${relayBase}/groups/${groupId}/members`, {
+  const resp = await signedFetch(`${relayBase}/groups/${groupId}/members`, {
     method: 'POST',
     body: JSON.stringify({ address: address.toLowerCase() }),
     headers: { 'Content-Type': 'application/json' },
@@ -590,7 +661,7 @@ async function handleLeaveGroup(groupId: string) {
   }
 
   const relayBase = getRelayHttpUrl()
-  const resp = await fetch(`${relayBase}/groups/${groupId}/members/${state.address}`, {
+  const resp = await signedFetch(`${relayBase}/groups/${groupId}/members/${state.address}`, {
     method: 'DELETE',
   })
 
@@ -614,7 +685,7 @@ async function handleAcceptGroup(groupId: string) {
 
   // Tell relay we accepted
   const relayBase = getRelayHttpUrl()
-  const resp = await fetch(`${relayBase}/groups/${groupId}/accept`, {
+  const resp = await signedFetch(`${relayBase}/groups/${groupId}/accept`, {
     method: 'POST',
     body: JSON.stringify({ address: state.address }),
     headers: { 'Content-Type': 'application/json' },
@@ -630,7 +701,57 @@ async function handleAcceptGroup(groupId: string) {
   return { content: [{ type: 'text', text: `Joined group "${invite.group_name}" (${invite.members.length} members).` }] }
 }
 
-function handleGroups() {
+async function handleDeclineGroup(groupId: string) {
+  const invites = getGroupInvites()
+  const invite = invites.find(i => i.group_id === groupId)
+  if (!invite) {
+    return { content: [{ type: 'text', text: 'No pending invite for this group ID' }], isError: true }
+  }
+
+  const relayBase = getRelayHttpUrl()
+  await signedFetch(`${relayBase}/groups/${groupId}/members/${state.address}`, { method: 'DELETE' }).catch(() => {})
+  deleteGroupInvite(groupId)
+
+  return { content: [{ type: 'text', text: `Declined invite for group "${invite.group_name}".` }] }
+}
+
+async function handleKickFromGroup(groupId: string, address: string) {
+  if (!address || !isValidAddress(address)) {
+    return { content: [{ type: 'text', text: 'Invalid Ethereum address' }], isError: true }
+  }
+
+  const relayBase = getRelayHttpUrl()
+  const resp = await signedFetch(`${relayBase}/groups/${groupId}/members/${address.toLowerCase()}`, { method: 'DELETE' })
+
+  if (!resp.ok) {
+    return { content: [{ type: 'text', text: `Failed to kick: ${await resp.text()}` }], isError: true }
+  }
+
+  removeGroupMember(groupId, address)
+  return { content: [{ type: 'text', text: `Kicked ${address} from the group.` }] }
+}
+
+async function handleTransferAdmin(groupId: string, address: string) {
+  if (!address || !isValidAddress(address)) {
+    return { content: [{ type: 'text', text: 'Invalid Ethereum address' }], isError: true }
+  }
+
+  const relayBase = getRelayHttpUrl()
+  const resp = await signedFetch(`${relayBase}/groups/${groupId}/transfer`, {
+    method: 'POST',
+    body: JSON.stringify({ from: state.address, to: address.toLowerCase() }),
+    headers: { 'Content-Type': 'application/json' },
+  })
+
+  if (!resp.ok) {
+    const err = await resp.text()
+    return { content: [{ type: 'text', text: `Failed to transfer admin: ${err}` }], isError: true }
+  }
+
+  return { content: [{ type: 'text', text: `Transferred admin to ${address}.` }] }
+}
+
+async function handleGroups() {
   const groupsList = getGroups()
   const invites = getGroupInvites()
 

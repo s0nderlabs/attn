@@ -124,7 +124,9 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
                 }
                 ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
                 const fromName = getContactName(update.address)
-                const actionText = update.action === 'joined' ? 'joined' : 'left'
+                const actionText = update.action === 'joined' ? 'joined'
+                  : update.action === 'admin_transferred' ? 'is now admin of'
+                  : 'left'
                 onInbound(
                   update.address,
                   `[Group] ${fromName || update.address} ${actionText} "${update.group_name}"`,

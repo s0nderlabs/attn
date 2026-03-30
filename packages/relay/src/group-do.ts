@@ -213,6 +213,66 @@ export class GroupMailbox extends DurableObject<Env> {
       return Response.json({ status: 'invited' })
     }
 
+    // Transfer admin
+    if (request.method === 'POST' && url.pathname === '/transfer') {
+      const body = (await request.json()) as { from: string; to: string }
+      const currentAdmin = [...this.ctx.storage.sql.exec<{ value: string }>(
+        `SELECT value FROM meta WHERE key = 'admin'`,
+      )][0]?.value
+
+      if (!currentAdmin || currentAdmin !== body.from.toLowerCase()) {
+        return Response.json({ error: 'Only the current admin can transfer' }, { status: 403 })
+      }
+
+      this.ctx.storage.sql.exec(`UPDATE members SET role = 'member' WHERE address = ?`, body.from.toLowerCase())
+      this.ctx.storage.sql.exec(`UPDATE members SET role = 'admin' WHERE address = ?`, body.to.toLowerCase())
+      this.ctx.storage.sql.exec(`UPDATE meta SET value = ? WHERE key = 'admin'`, body.to.toLowerCase())
+
+      const groupId = [...this.ctx.storage.sql.exec<{ value: string }>(
+        `SELECT value FROM meta WHERE key = 'id'`,
+      )][0]?.value
+      const groupName = [...this.ctx.storage.sql.exec<{ value: string }>(
+        `SELECT value FROM meta WHERE key = 'name'`,
+      )][0]?.value
+      const activeMembers = [...this.ctx.storage.sql.exec<{ address: string }>(
+        `SELECT address FROM members WHERE status = 'active'`,
+      )]
+
+      if (groupId && groupName) {
+        const updatePayload = JSON.stringify({
+          type: 'group_member_update',
+          group_id: groupId,
+          group_name: groupName,
+          action: 'admin_transferred',
+          address: body.to.toLowerCase(),
+          members: activeMembers.map(m => m.address),
+        })
+
+        await Promise.allSettled(
+          activeMembers.map(async (member) => {
+            const recipientId = this.env.AGENT_MAILBOX.idFromName(member.address)
+            const recipientStub = this.env.AGENT_MAILBOX.get(recipientId)
+            await recipientStub.fetch(
+              new Request('https://internal/deliver', {
+                method: 'POST',
+                body: JSON.stringify({
+                  id: `update-${groupId}-${Date.now()}`,
+                  from: body.to.toLowerCase(),
+                  encrypted: updatePayload,
+                  signature: '',
+                  ts: Date.now(),
+                  group_id: groupId,
+                  group_name: groupName,
+                }),
+              }),
+            )
+          }),
+        )
+      }
+
+      return Response.json({ status: 'transferred' })
+    }
+
     // Remove member — notify remaining active members
     if (request.method === 'DELETE' && url.pathname.startsWith('/members/')) {
       const address = url.pathname.slice('/members/'.length).toLowerCase()

@@ -121,6 +121,16 @@ export class AgentMailbox extends DurableObject<Env> {
       return Response.json({ publicKey: rows[0].public_key })
     }
 
+    // Online status check
+    if (request.method === 'GET' && url.pathname === '/status') {
+      const sockets = this.ctx.getWebSockets()
+      const online = sockets.some((ws) => {
+        const att = ws.deserializeAttachment() as { authenticated?: boolean } | null
+        return att?.authenticated === true
+      })
+      return Response.json({ online })
+    }
+
     // WebSocket upgrade
     if (request.headers.get('Upgrade') === 'websocket') {
       const pair = new WebSocketPair()
