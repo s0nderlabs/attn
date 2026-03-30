@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.2] - 2026-03-30
+
+### Fixed
+
+- Added parent PID watchdog to prevent orphaned plugin processes when Claude Code exits uncleanly
+
 ## [0.3.1] - 2026-03-30
 
 ### Added
@@ -107,6 +113,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.3.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.2
 [0.3.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.1
 [0.3.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.0
 [0.2.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.2.4

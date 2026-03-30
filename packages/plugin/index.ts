@@ -57,3 +57,16 @@ process.stdin.on('end', shutdown)
 process.stdin.on('close', shutdown)
 process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
+
+// Parent PID watchdog — exit if parent dies (prevents orphan processes)
+const parentPid = process.ppid
+if (parentPid && parentPid > 1) {
+  setInterval(() => {
+    try {
+      process.kill(parentPid, 0) // test if parent is alive (signal 0 = no-op)
+    } catch {
+      process.stderr.write('attn: parent process died, exiting\n')
+      shutdown()
+    }
+  }, 5000)
+}
