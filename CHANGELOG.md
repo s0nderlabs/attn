@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.5] - 2026-04-03
+
+### Fixed
+
+- Zombie process: added `process.stdin.resume()` so stdin EOF events fire when Claude Code closes the pipe — prevents orphan plugin processes
+- Zombie process: force-exit timeout (3s) guarantees shutdown even if WebSocket close hangs
+- Reverted relative imports back to workspace imports (`@attn/shared`) — the Windows issue was a missing bun install, not symlinks
+- Renamed `/attn:status` skill to `/attn:info` to avoid conflict with Claude Code's built-in `/status` command
+
+### Added
+
+- `/attn:history` skill — view conversation history in a readable chat format (`/attn:history alice 50`)
+
 ## [0.3.4] - 2026-03-30
 
 ### Fixed
@@ -84,7 +97,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- `contacts` tool now returns the agent's own address so `/attn:status` displays it correctly
+- `contacts` tool now returns the agent's own address so `/attn:info` displays it correctly
 
 ## [0.2.0] - 2026-03-29
 
@@ -99,7 +112,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Contact name resolution in channel notifications and message history
 - Alarm-based TTL cleanup on relay (7 days delivered, 30 days any)
 - Plugin packaging with `.claude-plugin/plugin.json` manifest
-- `/attn:status` skill for agent status overview
+- `/attn:info` skill for agent status overview
 - `/attn:access` skill for contact management
 - s0nderlabs marketplace (`s0nderlabs/s0nderlabs-marketplace`)
 
@@ -125,6 +138,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.3.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.5
 [0.3.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.4
 [0.3.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.3
 [0.3.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.2

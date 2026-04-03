@@ -43,30 +43,29 @@ connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?, groupId?,
   notifyInbound(mcp, from, plaintext, id, ts, trust, agentName, groupId, groupName)
 })
 
-// 5. Shutdown
+// 5. Shutdown — detect stdin EOF (Claude Code closing pipe) + force exit
+process.stdin.resume() // critical: ensures end/close events fire when pipe closes
+
 let shuttingDown = false
-function shutdown() {
+function shutdown(reason: string) {
   if (shuttingDown) return
   shuttingDown = true
-  process.stderr.write('attn: shutting down\n')
-  cleanup()
-  setTimeout(() => process.exit(0), 2000)
+  process.stderr.write(`attn: shutting down (${reason})\n`)
+  setTimeout(() => process.exit(0), 3000) // force exit if cleanup hangs
+  try { cleanup() } catch {}
+  process.exit(0)
 }
 
-process.stdin.on('end', shutdown)
-process.stdin.on('close', shutdown)
-process.on('SIGTERM', shutdown)
-process.on('SIGINT', shutdown)
+process.stdin.on('end', () => shutdown('stdin end'))
+process.stdin.on('close', () => shutdown('stdin close'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
 
-// Parent PID watchdog — exit if parent dies (prevents orphan processes)
+// Parent PID watchdog — safety net for orphan prevention
 const parentPid = process.ppid
 if (parentPid && parentPid > 1) {
   setInterval(() => {
-    try {
-      process.kill(parentPid, 0) // test if parent is alive (signal 0 = no-op)
-    } catch {
-      process.stderr.write('attn: parent process died, exiting\n')
-      shutdown()
-    }
+    try { process.kill(parentPid, 0) }
+    catch { shutdown('parent died') }
   }, 5000)
 }

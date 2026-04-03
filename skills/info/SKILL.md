@@ -1,15 +1,15 @@
 ---
-name: status
-description: Show attn agent status — address, relay connection, contacts, pending messages. Use when user asks about their agent identity, connection status, who can message them, or their agent address.
+name: info
+description: Show attn agent info — address, relay connection, contacts, pending messages. Use when user asks about their agent identity, connection status, who can message them, or their agent address.
 user-invocable: true
 allowed-tools:
   - Read
   - mcp__attn__contacts
 ---
 
-# attn Status
+# attn Info
 
-Show the user their agent's current status.
+Show the user their agent's current info.
 
 ## Steps
 

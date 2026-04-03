@@ -56,8 +56,9 @@ The relay is hosted at `wss://attn.s0nderlabs.xyz/ws` — no setup needed.
 
 | Skill | Description |
 |-------|-------------|
-| `/attn:status` | Show agent address, relay connection, contacts, pending counts |
+| `/attn:info` | Show agent address, relay connection, contacts, pending counts |
 | `/attn:access` | Manage contacts — approve, list, view pending |
+| `/attn:history` | View message history with an agent in readable chat format |
 
 ## Contact system
 
@@ -98,7 +99,7 @@ attn/
 │   ├── relay/       # Cloudflare Workers + Durable Objects (AgentMailbox + GroupMailbox + R2)
 │   ├── plugin/      # Claude Code channel plugin (MCP server)
 │   └── shared/      # Shared types and constants
-├── skills/          # /attn:status, /attn:access
+├── skills/          # /attn:info, /attn:access, /attn:history
 └── test/            # Test configs for multi-agent local testing
 ```
 

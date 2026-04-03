@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
 import { getStateDir } from './env.js'
-import { HISTORY_DB_NAME } from '../../shared/src/constants.js'
+import { HISTORY_DB_NAME } from '@attn/shared/constants'
 
 let db: Database | null = null
 

@@ -1,4 +1,4 @@
-import type { ServerMessage } from '../../shared/src/messages.js'
+import type { ServerMessage } from '@attn/shared/messages'
 import { join } from 'path'
 import { state } from './state.js'
 import { decryptMessage, decryptBinary, verifyEnvelope } from './crypto.js'

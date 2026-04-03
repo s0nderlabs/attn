@@ -8,6 +8,7 @@
     "start": "bun index.ts"
   },
   "dependencies": {
+    "@attn/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "eciesjs": "^0.4.0",
     "viem": "^2.28.0"
