@@ -19,6 +19,7 @@ export interface LocalMessage {
   fromAddress: string
   text: string
   ts: number
+  group?: string
 }
 
 // --- Paths ---

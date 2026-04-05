@@ -26,6 +26,9 @@ export function getInboxDir(): string {
 export function getSessionName(): string | null {
   const session = process.env.ATTN_SESSION
   if (!session || session === 'main') return null
+  if (session === 'all') {
+    throw new Error('"all" is reserved for local broadcast. Use a different ATTN_SESSION name.')
+  }
   if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
     throw new Error(`Invalid ATTN_SESSION name "${session}". Use only letters, numbers, hyphens, underscores.`)
   }

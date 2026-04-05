@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.1] - 2026-04-05
+
+### Added
+
+- Local broadcast via `send("all", "message")` — messages every local session at once
+- Local messages marked with `trust="local"` so agents reply without asking permission
+
 ## [0.4.0] - 2026-04-05
 
 ### Added
@@ -159,6 +166,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.4.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.1
 [0.4.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.0
 [0.3.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.5
 [0.3.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.4

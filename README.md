@@ -80,6 +80,7 @@ ATTN_SESSION=researcher ATTN_EXTERNAL=1 claude --dangerously-load-development-ch
 - **Derived sessions** (`ATTN_SESSION=name`): deterministic key derived from root, local-only by default
 - **`peers` tool**: discover running sessions on this machine
 - **Send by name**: `send("researcher", "check this paper")` — routes via local socket
+- **Broadcast**: `send("all", "status update")` — sends to every local session
 - **Per-session history**: each session has its own SQLite database
 
 ## Contact system

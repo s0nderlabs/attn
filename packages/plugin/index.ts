@@ -69,7 +69,11 @@ const localServer = startLocalServer(effectiveName, (msg: LocalMessage) => {
     ts: new Date(msg.ts).toISOString(),
   })
   state.lastInboundFrom = msg.from
-  notifyInbound(mcp, msg.fromAddress, msg.text, id, msg.ts, undefined, msg.from)
+  if (msg.group === 'local') {
+    notifyInbound(mcp, msg.fromAddress, msg.text, id, msg.ts, 'local', msg.from, undefined, 'local')
+  } else {
+    notifyInbound(mcp, msg.fromAddress, msg.text, id, msg.ts, 'local', msg.from)
+  }
 })
 state.localServer = localServer
 
