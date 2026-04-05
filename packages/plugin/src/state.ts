@@ -2,6 +2,7 @@ import type { privateKeyToAccount } from 'viem/accounts'
 
 export const state = {
   lastInboundFrom: null as string | null,
+  lastInboundGroup: null as string | null,
   keyCache: new Map<string, string>(),
   ws: null as WebSocket | null,
   authenticated: false,

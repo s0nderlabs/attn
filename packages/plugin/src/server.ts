@@ -500,7 +500,8 @@ async function handleReply(message: string) {
   if (!state.lastInboundFrom) {
     return { content: [{ type: 'text', text: 'No recent inbound message to reply to' }], isError: true }
   }
-  return handleSend(state.lastInboundFrom, message)
+  const to = state.lastInboundGroup ?? state.lastInboundFrom
+  return handleSend(to, message)
 }
 
 async function handleSendFile(to: string, path: string) {
@@ -947,6 +948,7 @@ export function notifyInbound(
   groupName?: string,
 ) {
   state.lastInboundFrom = from
+  if (trust !== 'local') state.lastInboundGroup = null
   mcp.notification({
     method: 'notifications/claude/channel',
     params: {
