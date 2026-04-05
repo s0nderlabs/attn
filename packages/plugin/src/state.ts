@@ -8,5 +8,7 @@ export const state = {
   address: '',
   account: null as ReturnType<typeof privateKeyToAccount> | null,
   privateKey: '' as `0x${string}`,
+  sessionName: null as string | null,
+  localServer: null as import('node:net').Server | null,
   pendingKeyRequests: new Map<string, Array<(key: string | null) => void>>(),
 }

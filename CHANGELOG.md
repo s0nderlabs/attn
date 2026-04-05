@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] - 2026-04-05
+
+### Added
+
+- Per-session identity via `ATTN_SESSION` env var — each session derives a unique key, address, and history DB from the root key
+- Local inter-session messaging via Unix domain sockets — sessions on the same machine communicate directly without the relay
+- `peers` tool to discover local sessions with liveness status
+- `send` tool now accepts local session names (e.g., `send("bob", "hello")`) in addition to Ethereum addresses
+- `reply` works seamlessly with local sessions
+- `ATTN_EXTERNAL=1` env var to opt derived sessions into relay access
+- Duplicate session detection — prevents two sessions with the same name running simultaneously
+- Automatic stale peer cleanup (dead PIDs)
+- Session name validation (alphanumeric, hyphens, underscores only)
+
+### Changed
+
+- `send` tool routing: checks local peers before relay, supports session names
+- Relay connection is conditional: main session always connects, derived sessions are local-only by default
+- Per-session SQLite database when `ATTN_SESSION` is set
+- MCP instructions updated with local session guidance
+
 ## [0.3.5] - 2026-04-03
 
 ### Fixed
@@ -138,6 +159,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.4.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.0
 [0.3.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.5
 [0.3.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.4
 [0.3.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.3

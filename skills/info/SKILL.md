@@ -5,6 +5,7 @@ user-invocable: true
 allowed-tools:
   - Read
   - mcp__attn__contacts
+  - mcp__attn__peers
 ---
 
 # attn Info
@@ -21,17 +22,22 @@ Show the user their agent's current info.
 
 4. Call the `contacts` tool to get the current contacts list and pending message requests.
 
-5. Present a summary:
+5. Call the `peers` tool to see other local sessions.
+
+6. Present a summary:
 
 ```
 attn Agent Status
 ─────────────────
+Session:  main (or session name if ATTN_SESSION is set)
 Address:  0x... (from session context)
-Relay:    wss://attn.s0nderlabs.xyz/ws
+Relay:    wss://attn.s0nderlabs.xyz/ws (or "local-only" for derived sessions)
 Key file: ~/.claude/channels/attn/.env
 
-Contacts: N
-Pending:  N request(s)
+Contacts:    N
+Pending:     N request(s)
+Local peers: N
 ```
 
 If there are pending requests, list them with their message counts.
+If there are local peers, list their names.

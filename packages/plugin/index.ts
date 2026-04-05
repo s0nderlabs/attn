@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
-import { resolvePrivateKey, getRelayUrl, getInboxDir } from './src/env.js'
-import { deriveIdentity } from './src/crypto.js'
-import { initDb, expirePending, getAllKeyCache } from './src/history.js'
+import { resolvePrivateKey, getRelayUrl, getInboxDir, getSessionName, isExternalEnabled } from './src/env.js'
+import { deriveIdentity, deriveSessionKey } from './src/crypto.js'
+import { initDb, expirePending, getAllKeyCache, saveMessage } from './src/history.js'
 import { state } from './src/state.js'
 import { connectMcp, notifyInbound } from './src/server.js'
 import { connectToRelay, cleanup } from './src/ws.js'
+import { checkDuplicateSession, writePeerInfo, startLocalServer, cleanupLocal } from './src/local.js'
+import type { LocalMessage } from './src/local.js'
 
 process.on('unhandledRejection', (err) => {
   process.stderr.write(`attn: unhandled rejection: ${err}\n`)
@@ -13,15 +15,26 @@ process.on('uncaughtException', (err) => {
   process.stderr.write(`attn: uncaught exception: ${err}\n`)
 })
 
-// 1. Load private key
-const privateKey = resolvePrivateKey()
+// 1. Load private key + session identity
+const rootKey = resolvePrivateKey()
+const sessionName = getSessionName()
+
+let privateKey: `0x${string}` = rootKey
+let effectiveName = 'main'
+
+if (sessionName) {
+  privateKey = deriveSessionKey(rootKey, sessionName)
+  effectiveName = sessionName
+}
+
 const { address, account } = deriveIdentity(privateKey)
 
 state.privateKey = privateKey
 state.address = address
 state.account = account
+state.sessionName = sessionName
 
-process.stderr.write(`attn: agent address ${address}\n`)
+process.stderr.write(`attn: session "${effectiveName}" address ${address}\n`)
 
 // 2. Initialize DB + maintenance
 initDb()
@@ -37,21 +50,49 @@ if (cachedKeys.length > 0) process.stderr.write(`attn: loaded ${cachedKeys.lengt
 // 3. Connect MCP
 const mcp = await connectMcp()
 
-// 4. Connect to relay
-const relayUrl = getRelayUrl()
-connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?, groupId?, groupName?) => {
-  notifyInbound(mcp, from, plaintext, id, ts, trust, agentName, groupId, groupName)
-})
+// 4. Check for duplicate session + start local server
+try {
+  checkDuplicateSession(effectiveName)
+} catch (err) {
+  process.stderr.write(`attn: ${err instanceof Error ? err.message : err}\n`)
+  process.exit(1)
+}
+writePeerInfo(effectiveName, address)
 
-// 5. Shutdown — detect stdin EOF (Claude Code closing pipe) + force exit
-process.stdin.resume() // critical: ensures end/close events fire when pipe closes
+const localServer = startLocalServer(effectiveName, (msg: LocalMessage) => {
+  const id = crypto.randomUUID()
+  saveMessage({
+    id,
+    peer: msg.from,
+    direction: 'inbound',
+    content: msg.text,
+    ts: new Date(msg.ts).toISOString(),
+  })
+  state.lastInboundFrom = msg.from
+  notifyInbound(mcp, msg.fromAddress, msg.text, id, msg.ts, undefined, msg.from)
+})
+state.localServer = localServer
+
+// 5. Connect to relay (main session or ATTN_EXTERNAL=1)
+if (!state.sessionName || isExternalEnabled()) {
+  const relayUrl = getRelayUrl()
+  connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?, groupId?, groupName?) => {
+    notifyInbound(mcp, from, plaintext, id, ts, trust, agentName, groupId, groupName)
+  })
+} else {
+  process.stderr.write(`attn: local-only (no relay)\n`)
+}
+
+// 6. Shutdown — detect stdin EOF (Claude Code closing pipe) + force exit
+process.stdin.resume()
 
 let shuttingDown = false
 function shutdown(reason: string) {
   if (shuttingDown) return
   shuttingDown = true
   process.stderr.write(`attn: shutting down (${reason})\n`)
-  setTimeout(() => process.exit(0), 3000) // force exit if cleanup hangs
+  setTimeout(() => process.exit(0), 3000)
+  try { cleanupLocal(effectiveName) } catch {}
   try { cleanup() } catch {}
   process.exit(0)
 }

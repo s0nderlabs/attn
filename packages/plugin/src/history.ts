@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
-import { getStateDir } from './env.js'
+import { getStateDir, getSessionName, getSessionDbDir } from './env.js'
 import { HISTORY_DB_NAME } from '@attn/shared/constants'
 
 let db: Database | null = null
@@ -9,10 +9,11 @@ let db: Database | null = null
 export function initDb(): Database {
   if (db) return db
 
-  const stateDir = getStateDir()
-  mkdirSync(stateDir, { recursive: true })
+  const sessionName = getSessionName()
+  const dbDir = sessionName ? getSessionDbDir(sessionName) : getStateDir()
+  mkdirSync(dbDir, { recursive: true })
 
-  db = new Database(join(stateDir, HISTORY_DB_NAME))
+  db = new Database(join(dbDir, HISTORY_DB_NAME))
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS messages (

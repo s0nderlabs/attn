@@ -1,6 +1,7 @@
 import { privateKeyToAccount } from 'viem/accounts'
 import { recoverMessageAddress } from 'viem'
 import { encrypt, decrypt } from 'eciesjs'
+import { createHmac } from 'node:crypto'
 
 export function deriveIdentity(privateKey: `0x${string}`) {
   const account = privateKeyToAccount(privateKey)
@@ -10,8 +11,15 @@ export function deriveIdentity(privateKey: `0x${string}`) {
   }
 }
 
+export function deriveSessionKey(rootKey: `0x${string}`, sessionName: string): `0x${string}` {
+  const keyBytes = Buffer.from(rootKey.slice(2), 'hex')
+  const derived = createHmac('sha256', keyBytes)
+    .update(`attn-session:${sessionName}`)
+    .digest('hex')
+  return `0x${derived}` as `0x${string}`
+}
+
 export function encryptMessage(recipientPublicKey: string, plaintext: string): string {
-  // eciesjs accepts hex string directly
   const pubKeyHex = recipientPublicKey.startsWith('0x') ? recipientPublicKey.slice(2) : recipientPublicKey
   const data = new TextEncoder().encode(plaintext)
   const encrypted = encrypt(pubKeyHex, data)

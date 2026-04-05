@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts'
-import { STATE_DIR_NAME, ENV_FILE_NAME, DEFAULT_RELAY_URL } from '@attn/shared/constants'
+import { STATE_DIR_NAME, ENV_FILE_NAME, DEFAULT_RELAY_URL, PEERS_DIR_NAME, SESSIONS_DIR_NAME } from '@attn/shared/constants'
 
 export function getStateDir(): string {
   return process.env.ATTN_STATE_DIR ?? join(homedir(), '.claude', 'channels', STATE_DIR_NAME)
@@ -21,6 +21,29 @@ export function getInboxDir(): string {
   const dir = join(getStateDir(), 'inbox')
   mkdirSync(dir, { recursive: true })
   return dir
+}
+
+export function getSessionName(): string | null {
+  const session = process.env.ATTN_SESSION
+  if (!session || session === 'main') return null
+  if (!/^[a-zA-Z0-9_-]+$/.test(session)) {
+    throw new Error(`Invalid ATTN_SESSION name "${session}". Use only letters, numbers, hyphens, underscores.`)
+  }
+  return session
+}
+
+export function isExternalEnabled(): boolean {
+  return process.env.ATTN_EXTERNAL === '1'
+}
+
+export function getPeersDir(): string {
+  // Always use the default location regardless of ATTN_STATE_DIR
+  // This is the shared discovery point for all sessions on this machine
+  return join(homedir(), '.claude', 'channels', STATE_DIR_NAME, PEERS_DIR_NAME)
+}
+
+export function getSessionDbDir(sessionName: string): string {
+  return join(getStateDir(), SESSIONS_DIR_NAME, sessionName)
 }
 
 export function loadEnvFile(): void {
