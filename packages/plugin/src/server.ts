@@ -29,6 +29,9 @@ import {
   deleteGroup,
   getGroupInvites,
   deleteGroupInvite,
+  saveReaction,
+  getReactionsForMessages,
+  getMessageById,
 } from './history.js'
 import { requestKey } from './ws.js'
 import { getRelayHttpUrl, getInboxDir } from './env.js'
@@ -68,6 +71,7 @@ export function createServer() {
         'Use the history tool to review past messages with a specific agent.',
         'Use the add_contact tool to approve a pending agent or pre-approve an agent before they message you.',
         'Use the contacts tool to see your contact list, pending requests, and blocked agents.',
+        'Use the react tool to add an emoji reaction to a message.',
         'Use group tools (create_group, send_group, groups) for multi-agent conversations.',
         'Use the peers tool to discover other local sessions running on this machine.',
         'You can send messages to local sessions by name (e.g., send("bob", "hello")) without needing an address.',
@@ -305,6 +309,18 @@ export function createServer() {
           required: [],
         },
       },
+      {
+        name: 'react',
+        description: 'React to a message with an emoji. Defaults to last received message.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            emoji: { type: 'string', description: 'Unicode emoji character to react with (e.g., "👍", "❤️", "🔥")' },
+            message_id: { type: 'string', description: 'ID of message to react to. Omit for last received message.' },
+          },
+          required: ['emoji'],
+        },
+      },
     ],
   }))
 
@@ -349,6 +365,8 @@ export function createServer() {
           return await handleGroups()
         case 'peers':
           return handlePeers()
+        case 'react':
+          return await handleReact(args.emoji as string, args.message_id as string | undefined)
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${req.params.name}` }], isError: true }
       }
@@ -359,6 +377,17 @@ export function createServer() {
   })
 
   return mcp
+}
+
+const EMOJI_MAP: Record<string, string> = {
+  thumbs_up: '👍', thumbs_down: '👎', heart: '❤️', fire: '🔥',
+  check: '✅', x: '❌', star: '⭐', eyes: '👀', rocket: '🚀',
+  party: '🎉', wave: '👋', clap: '👏', laugh: '😂', think: '🤔',
+  hundred: '💯', pray: '🙏',
+}
+
+function emojiToUnicode(input: string): string {
+  return EMOJI_MAP[input] ?? input
 }
 
 function isValidAddress(addr: string): boolean {
@@ -504,6 +533,151 @@ async function handleReply(message: string) {
   return handleSend(to, message)
 }
 
+async function handleReact(emoji: string, messageId?: string) {
+  if (!emoji) {
+    return { content: [{ type: 'text', text: 'Emoji is required' }], isError: true }
+  }
+
+  emoji = emojiToUnicode(emoji)
+
+  const resolvedMessageId = messageId ?? state.lastInboundMessageId
+  if (!resolvedMessageId) {
+    return { content: [{ type: 'text', text: 'No message to react to. Provide a message_id or receive a message first.' }], isError: true }
+  }
+
+  let recipient: string | null = null
+  let groupId: string | null = null
+
+  if (!messageId) {
+    // Reacting to last received message
+    recipient = state.lastInboundFrom
+    groupId = state.lastInboundGroup
+    if (!recipient) {
+      return { content: [{ type: 'text', text: 'No recent inbound message to react to' }], isError: true }
+    }
+  } else {
+    // Explicit message_id — look up routing target
+    const msg = getMessageById(messageId)
+    if (!msg) {
+      return { content: [{ type: 'text', text: `Message not found: ${messageId}` }], isError: true }
+    }
+    if (msg.direction === 'outbound') {
+      return { content: [{ type: 'text', text: 'Cannot react to your own outbound message' }], isError: true }
+    }
+    // Determine if DM or group
+    if (isValidAddress(msg.peer)) {
+      recipient = msg.peer
+    } else {
+      // peer is a group ID (UUID)
+      groupId = msg.peer
+    }
+  }
+
+  // Check if target is a local peer (for local reactions)
+  if (recipient && !recipient.startsWith('0x')) {
+    // Local session name — send reaction via local socket
+    const peer = getLocalPeer(recipient)
+    if (!peer) {
+      return { content: [{ type: 'text', text: `No local session named "${recipient}" is running.` }], isError: true }
+    }
+    const localMsg: LocalMessage = {
+      from: state.sessionName ?? 'main',
+      fromAddress: state.address,
+      text: emoji,
+      ts: Date.now(),
+      reaction_for: resolvedMessageId,
+    }
+    try {
+      await sendLocal(recipient, localMsg)
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      return { content: [{ type: 'text', text: `Failed to send reaction locally: ${errMsg}` }], isError: true }
+    }
+    saveReaction({ message_id: resolvedMessageId, from_address: state.address, emoji, ts: new Date().toISOString() })
+    return { content: [{ type: 'text', text: `Reacted ${emoji} to message from "${recipient}"` }] }
+  }
+
+  // Group reaction path
+  if (groupId) {
+    const members = getGroupMembers(groupId)
+    if (members.length === 0) {
+      return { content: [{ type: 'text', text: 'Group not found or has no members' }], isError: true }
+    }
+    const groupName = getGroupName(groupId)
+    if (!groupName) {
+      return { content: [{ type: 'text', text: 'Group not found' }], isError: true }
+    }
+
+    const otherMembers = members.filter(m => m.address !== state.address)
+    const keyResults = await Promise.all(
+      otherMembers.map(async (m) => ({ address: m.address, pubKey: await requestKey(m.address) })),
+    )
+    const blobs: Record<string, string> = {}
+    for (const { address, pubKey } of keyResults) {
+      if (!pubKey) continue
+      blobs[address] = encryptMessage(pubKey, emoji)
+    }
+
+    if (Object.keys(blobs).length === 0) {
+      return { content: [{ type: 'text', text: 'Could not encrypt for any group member' }], isError: true }
+    }
+
+    const id = crypto.randomUUID()
+    const relayBase = getRelayHttpUrl()
+    const resp = await signedFetch(`${relayBase}/groups/${groupId}/react`, {
+      method: 'POST',
+      body: JSON.stringify({
+        id,
+        from: state.address,
+        group_id: groupId,
+        group_name: groupName,
+        message_id: resolvedMessageId,
+        blobs,
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    })
+
+    if (!resp.ok) {
+      return { content: [{ type: 'text', text: `Failed to send group reaction: ${await resp.text()}` }], isError: true }
+    }
+
+    saveReaction({ message_id: resolvedMessageId, from_address: state.address, emoji, ts: new Date().toISOString() })
+    return { content: [{ type: 'text', text: `Reacted ${emoji} in group "${groupName}"` }] }
+  }
+
+  // DM reaction path
+  if (!recipient) {
+    return { content: [{ type: 'text', text: 'Could not determine reaction recipient' }], isError: true }
+  }
+
+  if (!state.ws || !state.authenticated) {
+    return { content: [{ type: 'text', text: 'Not connected to relay. Cannot send reaction.' }], isError: true }
+  }
+
+  const publicKey = await requestKey(recipient)
+  if (!publicKey) {
+    return { content: [{ type: 'text', text: `Could not find public key for ${recipient}. Agent may have never connected.` }], isError: true }
+  }
+
+  const encrypted = encryptMessage(publicKey, emoji)
+  const id = crypto.randomUUID()
+  const envelope = { id, to: recipient.toLowerCase(), encrypted }
+  const signature = await signEnvelope(state.account!, envelope)
+
+  state.ws.send(JSON.stringify({
+    type: 'reaction',
+    id,
+    to: recipient.toLowerCase(),
+    message_id: resolvedMessageId,
+    encrypted,
+    signature,
+  }))
+
+  saveReaction({ message_id: resolvedMessageId, from_address: state.address, emoji, ts: new Date().toISOString() })
+
+  return { content: [{ type: 'text', text: `Reacted ${emoji} to message from ${recipient}` }] }
+}
+
 async function handleSendFile(to: string, path: string) {
   if (!to || !isValidAddress(to)) {
     return { content: [{ type: 'text', text: 'Invalid Ethereum address' }], isError: true }
@@ -558,6 +732,16 @@ function handleHistory(peer: string, limit: number) {
     return { content: [{ type: 'text', text: `No messages found with ${peer}` }] }
   }
 
+  // Fetch reactions for displayed messages
+  const messageIds = messages.map(m => m.id)
+  const reactions = getReactionsForMessages(messageIds)
+  const reactionsByMsg = new Map<string, Array<{ emoji: string; from_address: string }>>()
+  for (const r of reactions) {
+    const arr = reactionsByMsg.get(r.message_id) ?? []
+    arr.push({ emoji: r.emoji, from_address: r.from_address })
+    reactionsByMsg.set(r.message_id, arr)
+  }
+
   const name = getContactName(peer) ?? getGroupName(peer)
   const header = name ? `Messages with ${name} (${peer})` : `Messages with ${peer}`
 
@@ -565,7 +749,18 @@ function handleHistory(peer: string, limit: number) {
     .map((m) => {
       const arrow = m.direction === 'inbound' ? '←' : '→'
       const time = m.ts.replace('T', ' ').replace(/\.\d+Z$/, '')
-      return `[${time}] ${arrow} ${m.content}`
+      let line = `[${time}] ${arrow} ${m.content}`
+      const msgReactions = reactionsByMsg.get(m.id)
+      if (msgReactions && msgReactions.length > 0) {
+        const reactionStr = msgReactions
+          .map(r => {
+            const rName = getContactName(r.from_address)
+            return `${r.emoji}${rName ? ` (${rName})` : ''}`
+          })
+          .join(', ')
+        line += ` [reactions: ${reactionStr}]`
+      }
+      return line
     })
     .join('\n')
 
@@ -940,25 +1135,53 @@ export function notifyInbound(
   mcp: Server,
   from: string,
   plaintext: string,
-  _id: string,
+  id: string,
   ts: number,
   trust?: string,
   agentName?: string,
   groupId?: string,
   groupName?: string,
+  reactionMessageId?: string,
 ) {
-  state.lastInboundFrom = from
-  if (trust !== 'local') state.lastInboundGroup = null
+  // Only update lastInbound state for real messages (not reactions, pending, or system messages)
+  if (trust !== 'reaction' && trust !== 'pending' && trust !== 'group_invite') {
+    state.lastInboundFrom = from
+    state.lastInboundMessageId = id
+    state.lastInboundGroup = groupId ?? (trust === 'local' ? state.lastInboundGroup : null)
+  }
+
+  const user = (groupName
+    ? `${groupName} · ${agentName || from}`
+    : (agentName || from)
+  ).replace(/['"&<>]/g, '')
+
+  // Reaction notification — deliver as a regular channel message so it renders
+  if (trust === 'reaction') {
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `reacted ${plaintext}`,
+        meta: {
+          agent_id: from,
+          user,
+          ts: new Date(ts).toISOString(),
+          ...(groupId ? { group_id: groupId, group_name: groupName } : {}),
+        },
+      },
+    }).catch((err) => {
+      process.stderr.write(`attn: failed to deliver reaction notification: ${err}\n`)
+    })
+    return
+  }
+
+  // Regular message notification
   mcp.notification({
     method: 'notifications/claude/channel',
     params: {
       content: plaintext,
       meta: {
         agent_id: from,
-        user: (groupName
-          ? `${groupName} · ${agentName || from}`
-          : (agentName || from)
-        ).replace(/['"&<>]/g, ''),
+        user,
         ts: new Date(ts).toISOString(),
         ...(trust ? { trust } : {}),
         ...(groupId ? { group_id: groupId, group_name: groupName } : {}),

@@ -20,6 +20,7 @@ export interface LocalMessage {
   text: string
   ts: number
   group?: string
+  reaction_for?: string
 }
 
 // --- Paths ---

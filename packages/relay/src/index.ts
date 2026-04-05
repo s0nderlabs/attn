@@ -146,6 +146,19 @@ export default {
       return new Response(resp.body, { status: resp.status, headers: CORS_HEADERS })
     }
 
+    // Group react (auth required)
+    if (request.method === 'POST' && url.pathname.match(/^\/groups\/[^/]+\/react$/)) {
+      try { await requireAuth(request) } catch (e) { return authError((e as Error).message) }
+
+      const groupId = url.pathname.split('/')[2]
+      const doId = env.GROUP_MAILBOX.idFromName(groupId)
+      const stub = env.GROUP_MAILBOX.get(doId)
+      const resp = await stub.fetch(new Request('https://internal/react', {
+        method: 'POST', body: request.body, headers: request.headers,
+      }))
+      return new Response(resp.body, { status: resp.status, headers: CORS_HEADERS })
+    }
+
     // Group send (auth required)
     if (request.method === 'POST' && url.pathname.match(/^\/groups\/[^/]+\/send$/)) {
       try { await requireAuth(request) } catch (e) { return authError((e as Error).message) }

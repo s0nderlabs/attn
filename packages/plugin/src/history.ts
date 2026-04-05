@@ -98,6 +98,16 @@ export function initDb(): Database {
     )
   `)
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reactions (
+      message_id TEXT NOT NULL,
+      from_address TEXT NOT NULL,
+      emoji TEXT NOT NULL,
+      ts TEXT NOT NULL,
+      PRIMARY KEY (message_id, from_address)
+    )
+  `)
+
   return db
 }
 
@@ -447,4 +457,43 @@ export function getGroupInvites(): Array<{
 export function deleteGroupInvite(groupId: string): void {
   const d = initDb()
   d.run(`DELETE FROM group_invites WHERE group_id = ?`, [groupId])
+}
+
+// --- Reactions ---
+
+export function saveReaction(reaction: {
+  message_id: string
+  from_address: string
+  emoji: string
+  ts: string
+}): void {
+  const d = initDb()
+  d.run(
+    `INSERT OR REPLACE INTO reactions (message_id, from_address, emoji, ts) VALUES (?, ?, ?, ?)`,
+    [reaction.message_id, reaction.from_address.toLowerCase(), reaction.emoji, reaction.ts],
+  )
+}
+
+export function getReactionsForMessages(
+  messageIds: string[],
+): Array<{ message_id: string; from_address: string; emoji: string; ts: string }> {
+  if (messageIds.length === 0) return []
+  const d = initDb()
+  const placeholders = messageIds.map(() => '?').join(',')
+  return d
+    .query<{ message_id: string; from_address: string; emoji: string; ts: string }, string[]>(
+      `SELECT message_id, from_address, emoji, ts FROM reactions WHERE message_id IN (${placeholders})`,
+    )
+    .all(...messageIds)
+}
+
+export function getMessageById(
+  id: string,
+): { id: string; peer: string; direction: string; content: string; ts: string } | null {
+  const d = initDb()
+  return d
+    .query<{ id: string; peer: string; direction: string; content: string; ts: string }, [string]>(
+      `SELECT id, peer, direction, content, ts FROM messages WHERE id = ?`,
+    )
+    .get(id) ?? null
 }

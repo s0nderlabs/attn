@@ -18,12 +18,14 @@ import {
   saveGroupInvite,
   addGroupMember,
   removeGroupMember,
+  saveReaction,
 } from './history.js'
 import { getInboxDir } from './env.js'
 
 type OnInbound = (
   from: string, plaintext: string, id: string, ts: number,
   trust?: string, agentName?: string, groupId?: string, groupName?: string,
+  reactionMessageId?: string,
 ) => void
 
 let reconnectDelay = 1000
@@ -205,6 +207,59 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
         } catch (err) {
           process.stderr.write(
             `attn: failed to process message from ${msg.from}: ${err instanceof Error ? err.message : err}\n`,
+          )
+          ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
+        }
+        break
+      }
+
+      case 'reaction': {
+        try {
+          if (isBlocked(msg.from)) {
+            ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
+            break
+          }
+
+          const emoji = decryptMessage(state.privateKey, msg.encrypted)
+
+          // DM reactions: verify signature
+          if (!msg.group_id) {
+            const valid = await verifyEnvelope(
+              msg.from,
+              { id: msg.id, to: state.address, encrypted: msg.encrypted },
+              msg.signature as `0x${string}`,
+            )
+            if (!valid) {
+              ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
+              break
+            }
+
+            // Silently drop reactions from non-contacts
+            if (!isContact(msg.from)) {
+              ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
+              break
+            }
+          }
+
+          saveReaction({
+            message_id: msg.message_id,
+            from_address: msg.from,
+            emoji,
+            ts: new Date(msg.ts).toISOString(),
+          })
+
+          ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
+
+          const agentName = getContactName(msg.from)
+          onInbound(
+            msg.from, emoji, msg.id, msg.ts,
+            'reaction', agentName ?? undefined,
+            msg.group_id, msg.group_name,
+            msg.message_id,
+          )
+        } catch (err) {
+          process.stderr.write(
+            `attn: failed to process reaction from ${msg.from}: ${err instanceof Error ? err.message : err}\n`,
           )
           ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
         }

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.3] - 2026-04-05
+
+### Added
+
+- `react` tool — add emoji reactions to messages, encrypted end-to-end
+- Reactions stored + queued for offline delivery, same as messages
+- Group reaction fan-out — react to group messages, all members see it
+- Local session reactions via Unix sockets (no relay needed)
+- Reactions displayed inline in `history` tool output
+- One reaction per agent per message — new reaction replaces old
+
 ## [0.4.2] - 2026-04-05
 
 ### Fixed

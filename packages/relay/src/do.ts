@@ -40,6 +40,7 @@ export class AgentMailbox extends DurableObject<Env> {
       `)
       try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN group_id TEXT`) } catch {}
       try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN group_name TEXT`) } catch {}
+      try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN reaction_message_id TEXT`) } catch {}
     })
   }
 
@@ -65,10 +66,11 @@ export class AgentMailbox extends DurableObject<Env> {
         ts: number
         group_id?: string
         group_name?: string
+        reaction_message_id?: string
       }
 
       this.ctx.storage.sql.exec(
-        `INSERT OR IGNORE INTO queue (id, from_address, encrypted, signature, ts, delivered, group_id, group_name) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+        `INSERT OR IGNORE INTO queue (id, from_address, encrypted, signature, ts, delivered, group_id, group_name, reaction_message_id) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
         msg.id,
         msg.from,
         msg.encrypted,
@@ -76,20 +78,23 @@ export class AgentMailbox extends DurableObject<Env> {
         msg.ts,
         msg.group_id ?? null,
         msg.group_name ?? null,
+        msg.reaction_message_id ?? null,
       )
 
       const sockets = this.ctx.getWebSockets()
       let delivered = false
 
+      const isReaction = !!msg.reaction_message_id
       for (const ws of sockets) {
         const att = ws.deserializeAttachment() as WsAttachment | null
         if (att?.authenticated) {
           try {
             ws.send(
               JSON.stringify({
-                type: 'message',
+                type: isReaction ? 'reaction' : 'message',
                 id: msg.id,
                 from: msg.from,
+                ...(isReaction ? { message_id: msg.reaction_message_id } : {}),
                 encrypted: msg.encrypted,
                 signature: msg.signature,
                 ts: msg.ts,
@@ -214,17 +219,20 @@ export class AgentMailbox extends DurableObject<Env> {
           ts: number
           group_id: string | null
           group_name: string | null
-        }>(`SELECT id, from_address, encrypted, signature, ts, group_id, group_name FROM queue WHERE delivered = 0 ORDER BY ts ASC LIMIT 100`),
+          reaction_message_id: string | null
+        }>(`SELECT id, from_address, encrypted, signature, ts, group_id, group_name, reaction_message_id FROM queue WHERE delivered = 0 ORDER BY ts ASC LIMIT 100`),
       ]
 
       const deliveredIds: string[] = []
       for (const row of queued) {
         try {
+          const isReaction = !!row.reaction_message_id
           ws.send(
             JSON.stringify({
-              type: 'message',
+              type: isReaction ? 'reaction' : 'message',
               id: row.id,
               from: row.from_address,
+              ...(isReaction ? { message_id: row.reaction_message_id } : {}),
               encrypted: row.encrypted,
               signature: row.signature,
               ts: row.ts,
@@ -309,6 +317,61 @@ export class AgentMailbox extends DurableObject<Env> {
         // Schedule cleanup since delivered messages were just modified
         const alarm = await this.ctx.storage.getAlarm()
         if (!alarm) await this.ctx.storage.setAlarm(Date.now() + 60_000)
+        break
+      }
+
+      case 'reaction': {
+        const to = msg.to as string
+        const id = msg.id as string
+        const messageId = msg.message_id as string
+        const encrypted = msg.encrypted as string
+        const signature = msg.signature as string
+
+        if (!isValidAddress(to)) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Invalid recipient address' }))
+          break
+        }
+        if (!id || typeof id !== 'string' || id.length > 100) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Invalid message id' }))
+          break
+        }
+        if (!messageId || typeof messageId !== 'string') {
+          ws.send(JSON.stringify({ type: 'error', error: 'Missing reaction message_id' }))
+          break
+        }
+
+        ws.send(JSON.stringify({ type: 'received', id }))
+
+        const reactionRecipientId = this.env.AGENT_MAILBOX.idFromName(to.toLowerCase())
+        const reactionRecipientStub = this.env.AGENT_MAILBOX.get(reactionRecipientId)
+
+        try {
+          const resp = await reactionRecipientStub.fetch(
+            new Request('https://internal/deliver', {
+              method: 'POST',
+              body: JSON.stringify({
+                id,
+                from: att.address,
+                encrypted,
+                signature,
+                ts: Date.now(),
+                reaction_message_id: messageId,
+              }),
+            }),
+          )
+
+          const result = (await resp.json()) as { status: string }
+          if (result.status === 'delivered') {
+            ws.send(JSON.stringify({ type: 'delivered', id }))
+          }
+        } catch (err) {
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              error: `Failed to route reaction: ${err instanceof Error ? err.message : 'unknown'}`,
+            }),
+          )
+        }
         break
       }
 

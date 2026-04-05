@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { resolvePrivateKey, getRelayUrl, getInboxDir, getSessionName, isExternalEnabled } from './src/env.js'
 import { deriveIdentity, deriveSessionKey } from './src/crypto.js'
-import { initDb, expirePending, getAllKeyCache, saveMessage } from './src/history.js'
+import { initDb, expirePending, getAllKeyCache, saveMessage, saveReaction } from './src/history.js'
 import { state } from './src/state.js'
 import { connectMcp, notifyInbound } from './src/server.js'
 import { connectToRelay, cleanup } from './src/ws.js'
@@ -61,6 +61,20 @@ writePeerInfo(effectiveName, address)
 
 const localServer = startLocalServer(effectiveName, (msg: LocalMessage) => {
   const id = crypto.randomUUID()
+
+  // Local reaction
+  if (msg.reaction_for) {
+    saveReaction({
+      message_id: msg.reaction_for,
+      from_address: msg.fromAddress,
+      emoji: msg.text,
+      ts: new Date(msg.ts).toISOString(),
+    })
+    notifyInbound(mcp, msg.fromAddress, msg.text, id, msg.ts, 'reaction', msg.from, undefined, undefined, msg.reaction_for)
+    return
+  }
+
+  // Regular local message
   saveMessage({
     id,
     peer: msg.from,
@@ -68,21 +82,22 @@ const localServer = startLocalServer(effectiveName, (msg: LocalMessage) => {
     content: msg.text,
     ts: new Date(msg.ts).toISOString(),
   })
-  state.lastInboundFrom = msg.from
-  state.lastInboundGroup = msg.group === 'local' ? 'all' : null
   if (msg.group === 'local') {
     notifyInbound(mcp, msg.fromAddress, msg.text, id, msg.ts, 'local', msg.from, undefined, 'local')
   } else {
     notifyInbound(mcp, msg.fromAddress, msg.text, id, msg.ts, 'local', msg.from)
   }
+  // Override after notifyInbound — preserve session name for local reply/react routing
+  state.lastInboundFrom = msg.from
+  state.lastInboundGroup = msg.group === 'local' ? 'all' : null
 })
 state.localServer = localServer
 
 // 5. Connect to relay (main session or ATTN_EXTERNAL=1)
 if (!state.sessionName || isExternalEnabled()) {
   const relayUrl = getRelayUrl()
-  connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?, groupId?, groupName?) => {
-    notifyInbound(mcp, from, plaintext, id, ts, trust, agentName, groupId, groupName)
+  connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?, groupId?, groupName?, reactionMessageId?) => {
+    notifyInbound(mcp, from, plaintext, id, ts, trust, agentName, groupId, groupName, reactionMessageId)
   })
 } else {
   process.stderr.write(`attn: local-only (no relay)\n`)

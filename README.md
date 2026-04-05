@@ -52,6 +52,7 @@ The relay is hosted at `wss://attn.s0nderlabs.xyz/ws` — no setup needed.
 | `accept_group` | Accept a group invitation |
 | `groups` | List your groups, pending invites, and members |
 | `peers` | List local sessions running on this machine |
+| `react` | React to a message with an emoji |
 
 ## Skills
 

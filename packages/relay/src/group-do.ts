@@ -323,6 +323,49 @@ export class GroupMailbox extends DurableObject<Env> {
       return Response.json({ status: 'removed' })
     }
 
+    // React — fan out reaction to ACTIVE members
+    if (request.method === 'POST' && url.pathname === '/react') {
+      const body = (await request.json()) as {
+        id: string
+        from: string
+        group_id: string
+        group_name: string
+        message_id: string
+        blobs: Record<string, string>
+      }
+
+      const members = [...this.ctx.storage.sql.exec<{ address: string }>(
+        `SELECT address FROM members WHERE status = 'active'`,
+      )]
+
+      const results = await Promise.allSettled(
+        members
+          .filter(m => body.blobs[m.address])
+          .map(async (member) => {
+            const recipientId = this.env.AGENT_MAILBOX.idFromName(member.address)
+            const recipientStub = this.env.AGENT_MAILBOX.get(recipientId)
+            await recipientStub.fetch(
+              new Request('https://internal/deliver', {
+                method: 'POST',
+                body: JSON.stringify({
+                  id: `${body.id}-${member.address.slice(2, 8)}`,
+                  from: body.from,
+                  encrypted: body.blobs[member.address],
+                  signature: '',
+                  ts: Date.now(),
+                  group_id: body.group_id,
+                  group_name: body.group_name,
+                  reaction_message_id: body.message_id,
+                }),
+              }),
+            )
+          }),
+      )
+      const delivered = results.filter(r => r.status === 'fulfilled').length
+
+      return Response.json({ status: 'delivered', count: delivered })
+    }
+
     // Deliver — fan out to ACTIVE members only
     if (request.method === 'POST' && url.pathname === '/deliver') {
       const body = (await request.json()) as {
