@@ -3,6 +3,7 @@ import { verifyAuth } from './auth.js'
 
 type Env = {
   AGENT_MAILBOX: DurableObjectNamespace
+  NAME_INDEXER: DurableObjectNamespace
 }
 
 type WsAttachment = {
@@ -81,6 +82,8 @@ export class AgentMailbox extends DurableObject<Env> {
         msg.reaction_message_id ?? null,
       )
 
+      const fromName = await this.resolvePrimaryName(msg.from)
+
       const sockets = this.ctx.getWebSockets()
       let delivered = false
 
@@ -94,6 +97,7 @@ export class AgentMailbox extends DurableObject<Env> {
                 type: isReaction ? 'reaction' : 'message',
                 id: msg.id,
                 from: msg.from,
+                ...(fromName ? { from_name: fromName } : {}),
                 ...(isReaction ? { message_id: msg.reaction_message_id } : {}),
                 encrypted: msg.encrypted,
                 signature: msg.signature,
@@ -223,15 +227,25 @@ export class AgentMailbox extends DurableObject<Env> {
         }>(`SELECT id, from_address, encrypted, signature, ts, group_id, group_name, reaction_message_id FROM queue WHERE delivered = 0 ORDER BY ts ASC LIMIT 100`),
       ]
 
+      // Batch-resolve sender names for queued messages (parallel)
+      const senderAddrs = [...new Set(queued.map(r => r.from_address.toLowerCase()))]
+      const senderNames = new Map<string, string>()
+      await Promise.allSettled(senderAddrs.map(async (addr) => {
+        const name = await this.resolvePrimaryName(addr)
+        if (name) senderNames.set(addr, name)
+      }))
+
       const deliveredIds: string[] = []
       for (const row of queued) {
         try {
           const isReaction = !!row.reaction_message_id
+          const qFromName = senderNames.get(row.from_address.toLowerCase())
           ws.send(
             JSON.stringify({
               type: isReaction ? 'reaction' : 'message',
               id: row.id,
               from: row.from_address,
+              ...(qFromName ? { from_name: qFromName } : {}),
               ...(isReaction ? { message_id: row.reaction_message_id } : {}),
               encrypted: row.encrypted,
               signature: row.signature,
@@ -408,8 +422,65 @@ export class AgentMailbox extends DurableObject<Env> {
         break
       }
 
+      case 'resolve': {
+        const name = msg.name as string
+        if (!name || typeof name !== 'string' || name.length < 3 || name.length > 32) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Invalid name' }))
+          break
+        }
+        const label = name.endsWith('.attn') ? name.slice(0, -5) : name
+
+        try {
+          const indexerId = this.env.NAME_INDEXER.idFromName('singleton')
+          const indexerStub = this.env.NAME_INDEXER.get(indexerId)
+          const resolveResp = await indexerStub.fetch(
+            new Request(`https://internal/resolve?name=${encodeURIComponent(label.toLowerCase())}`)
+          )
+          const resolveResult = (await resolveResp.json()) as { address: string | null }
+
+          if (!resolveResult.address) {
+            ws.send(JSON.stringify({ type: 'resolve_response', name: label, address: null, publicKey: null }))
+            break
+          }
+
+          // Also fetch public key from target's AgentMailbox
+          let publicKey: string | null = null
+          try {
+            const targetId = this.env.AGENT_MAILBOX.idFromName(resolveResult.address.toLowerCase())
+            const targetStub = this.env.AGENT_MAILBOX.get(targetId)
+            const keyResp = await targetStub.fetch(new Request('https://internal/key'))
+            const keyResult = (await keyResp.json()) as { publicKey: string | null }
+            publicKey = keyResult.publicKey
+          } catch {}
+
+          ws.send(JSON.stringify({
+            type: 'resolve_response',
+            name: label,
+            address: resolveResult.address,
+            publicKey,
+          }))
+        } catch {
+          ws.send(JSON.stringify({ type: 'resolve_response', name: label, address: null, publicKey: null }))
+        }
+        break
+      }
+
       default:
         ws.send(JSON.stringify({ type: 'error', error: `Unknown message type: ${msg.type}` }))
+    }
+  }
+
+  private async resolvePrimaryName(address: string): Promise<string | undefined> {
+    try {
+      const indexerId = this.env.NAME_INDEXER.idFromName('singleton')
+      const indexerStub = this.env.NAME_INDEXER.get(indexerId)
+      const resp = await indexerStub.fetch(
+        new Request(`https://internal/primary?address=${encodeURIComponent(address.toLowerCase())}`)
+      )
+      const result = (await resp.json()) as { name: string | null }
+      return result.name ?? undefined
+    } catch {
+      return undefined
     }
   }
 

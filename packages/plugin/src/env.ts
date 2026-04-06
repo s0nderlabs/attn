@@ -40,8 +40,7 @@ export function isExternalEnabled(): boolean {
 }
 
 export function getPeersDir(): string {
-  // Always use the default location regardless of ATTN_STATE_DIR
-  // This is the shared discovery point for all sessions on this machine
+  if (process.env.ATTN_STATE_DIR) return join(process.env.ATTN_STATE_DIR, PEERS_DIR_NAME)
   return join(homedir(), '.claude', 'channels', STATE_DIR_NAME, PEERS_DIR_NAME)
 }
 

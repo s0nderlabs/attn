@@ -1,0 +1,15 @@
+export const attnNamesAbi = [
+  { type: 'function', name: 'resolve', inputs: [{ name: 'label', type: 'string' }], outputs: [{ name: 'owner_', type: 'address' }, { name: 'node', type: 'bytes32' }], stateMutability: 'view' },
+  { type: 'function', name: 'primaryNameOf', inputs: [{ name: 'addr', type: 'address' }], outputs: [{ name: '', type: 'string' }], stateMutability: 'view' },
+  { type: 'function', name: 'available', inputs: [{ name: 'label', type: 'string' }], outputs: [{ name: '', type: 'bool' }], stateMutability: 'view' },
+  { type: 'function', name: 'register', inputs: [{ name: 'label', type: 'string' }], outputs: [], stateMutability: 'payable' },
+  { type: 'function', name: 'setPrimaryName', inputs: [{ name: 'label', type: 'string' }], outputs: [], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'clearPrimaryName', inputs: [], outputs: [], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'registrationFee', inputs: [], outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'namehash', inputs: [{ name: 'label', type: 'string' }], outputs: [{ name: '', type: 'bytes32' }], stateMutability: 'pure' },
+  { type: 'function', name: 'balanceOf', inputs: [{ name: 'owner', type: 'address' }], outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'ownerOf', inputs: [{ name: 'tokenId', type: 'uint256' }], outputs: [{ name: '', type: 'address' }], stateMutability: 'view' },
+  { type: 'function', name: 'transferFrom', inputs: [{ name: 'from', type: 'address' }, { name: 'to', type: 'address' }, { name: 'tokenId', type: 'uint256' }], outputs: [], stateMutability: 'nonpayable' },
+  { type: 'event', name: 'NameRegistered', inputs: [{ name: 'node', type: 'bytes32', indexed: true }, { name: 'label', type: 'string', indexed: false }, { name: 'owner', type: 'address', indexed: true }, { name: 'tokenId', type: 'uint256', indexed: false }] },
+  { type: 'event', name: 'Transfer', inputs: [{ name: 'from', type: 'address', indexed: true }, { name: 'to', type: 'address', indexed: true }, { name: 'tokenId', type: 'uint256', indexed: true }] },
+] as const

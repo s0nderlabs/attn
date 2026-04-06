@@ -160,6 +160,11 @@ export function addContact(address: string, name?: string): void {
   )
 }
 
+export function updateContactName(address: string, name: string | null): void {
+  const d = initDb()
+  d.run(`UPDATE contacts SET name = ? WHERE address = ?`, [name, address.toLowerCase()])
+}
+
 export function getContactName(address: string): string | null {
   const d = initDb()
   const row = d

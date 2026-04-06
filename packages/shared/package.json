@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./messages": "./src/messages.ts",
-    "./constants": "./src/constants.ts"
+    "./constants": "./src/constants.ts",
+    "./attn-names-abi": "./src/attn-names-abi.ts"
   }
 }

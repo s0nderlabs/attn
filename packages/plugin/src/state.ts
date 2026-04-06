@@ -13,4 +13,5 @@ export const state = {
   sessionName: null as string | null,
   localServer: null as import('node:net').Server | null,
   pendingKeyRequests: new Map<string, Array<(key: string | null) => void>>(),
+  pendingResolveRequests: new Map<string, Array<(result: { address: string; publicKey: string | null } | null) => void>>(),
 }

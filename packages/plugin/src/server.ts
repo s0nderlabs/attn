@@ -33,10 +33,33 @@ import {
   getReactionsForMessages,
   getMessageById,
 } from './history.js'
-import { requestKey } from './ws.js'
+import { requestKey, requestResolve } from './ws.js'
 import { getRelayHttpUrl, getInboxDir } from './env.js'
 import { getLocalPeers, getLocalPeer, sendLocal } from './local.js'
 import type { LocalMessage } from './local.js'
+import { createPublicClient, createWalletClient, http, formatEther } from 'viem'
+import { base } from 'viem/chains'
+import { privateKeyToAccount } from 'viem/accounts'
+import { ATTN_NAMES_ADDRESS, BASE_RPC_DEFAULT } from '@attn/shared/constants'
+import { attnNamesAbi } from '@attn/shared/attn-names-abi'
+
+function getBaseRpcUrl(): string {
+  return process.env.ATTN_BASE_RPC ?? BASE_RPC_DEFAULT
+}
+
+function getBasePublicClient() {
+  return createPublicClient({ chain: base, transport: http(getBaseRpcUrl()) })
+}
+
+function getBaseWalletClient() {
+  return createWalletClient({
+    chain: base,
+    transport: http(getBaseRpcUrl()),
+    account: privateKeyToAccount(state.privateKey),
+  })
+}
+
+const NAMES_ADDRESS = ATTN_NAMES_ADDRESS as `0x${string}`
 
 async function signedFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const parsed = new URL(url)
@@ -72,6 +95,9 @@ export function createServer() {
         'Use the add_contact tool to approve a pending agent or pre-approve an agent before they message you.',
         'Use the contacts tool to see your contact list, pending requests, and blocked agents.',
         'Use the react tool to add an emoji reaction to a message.',
+        'Use .attn names to message agents by name: send("alice.attn", "hey") resolves the name and sends.',
+        'Use register_name to claim a name, lookup to resolve names/addresses, names to list owned names.',
+        'Names are 3-32 chars, lowercase a-z, 0-9, and hyphens. Registration costs 0.001 ETH on Base.',
         'Use group tools (create_group, send_group, groups) for multi-agent conversations.',
         'Use the peers tool to discover other local sessions running on this machine.',
         'You can send messages to local sessions by name (e.g., send("bob", "hello")) without needing an address.',
@@ -321,6 +347,62 @@ export function createServer() {
           required: ['emoji'],
         },
       },
+      {
+        name: 'register_name',
+        description: 'Register an .attn name on Base. Costs 0.001 ETH + gas. The name becomes an ERC-721 NFT tied to your address.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            label: { type: 'string', description: 'Name to register (3-32 chars, lowercase a-z, 0-9, hyphens). Without ".attn" suffix.' },
+          },
+          required: ['label'],
+        },
+      },
+      {
+        name: 'lookup',
+        description: 'Look up an .attn name to find the address, or look up an address to find its primary .attn name.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            query: { type: 'string', description: 'An .attn name (e.g., "alice" or "alice.attn") or an Ethereum address (0x...)' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'names',
+        description: 'List .attn names owned by you or another address.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            address: { type: 'string', description: 'Ethereum address to query. Defaults to your own address.' },
+          },
+          required: [],
+        },
+      },
+      {
+        name: 'transfer_name',
+        description: 'Transfer an .attn name (ERC-721) to another address.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            label: { type: 'string', description: 'The .attn name to transfer (without .attn suffix)' },
+            to: { type: 'string', description: 'Recipient Ethereum address (0x...)' },
+          },
+          required: ['label', 'to'],
+        },
+      },
+      {
+        name: 'set_primary_name',
+        description: 'Set your primary .attn name. This is the name shown when others look up your address.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            label: { type: 'string', description: 'The .attn name to set as primary (you must own it). Without .attn suffix.' },
+          },
+          required: ['label'],
+        },
+      },
     ],
   }))
 
@@ -338,7 +420,7 @@ export function createServer() {
         case 'history':
           return handleHistory(args.with as string, (args.limit as number) ?? 20)
         case 'add_contact':
-          return handleAddContact(args.address as string, args.name as string | undefined)
+          return await handleAddContact(args.address as string, args.name as string | undefined)
         case 'remove_contact':
           return handleRemoveContact(args.address as string)
         case 'block':
@@ -367,6 +449,16 @@ export function createServer() {
           return handlePeers()
         case 'react':
           return await handleReact(args.emoji as string, args.message_id as string | undefined)
+        case 'register_name':
+          return await handleRegisterName(args.label as string)
+        case 'lookup':
+          return await handleLookup(args.query as string)
+        case 'names':
+          return await handleNames(args.address as string | undefined)
+        case 'transfer_name':
+          return await handleTransferName(args.label as string, args.to as string)
+        case 'set_primary_name':
+          return await handleSetPrimaryName(args.label as string)
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${req.params.name}` }], isError: true }
       }
@@ -425,7 +517,39 @@ async function handleSend(to: string, message: string) {
     return { content: [{ type: 'text', text: `Message broadcast to ${sent.length} local session(s): ${sent.join(', ')}` }] }
   }
 
-  // 2. Check if 'to' is a local session name (not an address)
+  // 2. Resolve .attn name to address
+  if (to.endsWith('.attn')) {
+    const label = to.slice(0, -5).toLowerCase()
+    if (!label || label.length < 3) {
+      return { content: [{ type: 'text', text: `Invalid .attn name: "${to}"` }], isError: true }
+    }
+    if (!state.ws || !state.authenticated) {
+      return { content: [{ type: 'text', text: 'Not connected to relay. Cannot resolve .attn name.' }], isError: true }
+    }
+    const resolved = await requestResolve(label)
+    if (!resolved) {
+      return { content: [{ type: 'text', text: `Name "${to}" not found. It may not be registered.` }], isError: true }
+    }
+    // Cache public key and auto-add contact
+    if (resolved.publicKey) state.keyCache.set(resolved.address, resolved.publicKey)
+    addContactAndDeliverPending(resolved.address, label + '.attn')
+
+
+    const publicKey = resolved.publicKey ?? await requestKey(resolved.address)
+    if (!publicKey) {
+      return { content: [{ type: 'text', text: `Resolved ${to} → ${resolved.address}, but agent has never connected (no public key).` }], isError: true }
+    }
+
+    const encrypted = encryptMessage(publicKey, message)
+    const id = crypto.randomUUID()
+    const envelope = { id, to: resolved.address, encrypted }
+    const signature = await signEnvelope(state.account!, envelope)
+    state.ws.send(JSON.stringify({ type: 'message', id, to: resolved.address, encrypted, signature }))
+    saveMessage({ id, peer: resolved.address, direction: 'outbound', content: message, ts: new Date().toISOString() })
+    return { content: [{ type: 'text', text: `Message sent to ${label}.attn (${resolved.address})` }] }
+  }
+
+  // 3. Check if 'to' is a local session name (not an address)
   if (!to.startsWith('0x')) {
     const peer = getLocalPeer(to)
     if (!peer) {
@@ -726,6 +850,151 @@ async function handleSendFile(to: string, path: string) {
   return await handleSend(to, fileRef)
 }
 
+// ── Name Tools ──────────────────────────────────────────────────────────
+
+async function handleRegisterName(label: string) {
+  if (!label) return { content: [{ type: 'text', text: 'Label is required' }], isError: true }
+  label = label.toLowerCase().replace(/\.attn$/, '')
+  if (label.length < 3 || label.length > 32) {
+    return { content: [{ type: 'text', text: 'Label must be 3-32 characters' }], isError: true }
+  }
+
+  const publicClient = getBasePublicClient()
+
+  const isAvail = await publicClient.readContract({
+    address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'available', args: [label],
+  })
+  if (!isAvail) return { content: [{ type: 'text', text: `"${label}.attn" is already taken.` }], isError: true }
+
+  const fee = await publicClient.readContract({
+    address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'registrationFee',
+  }) as bigint
+
+  try {
+    const walletClient = getBaseWalletClient()
+    const hash = await walletClient.writeContract({
+      address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'register', args: [label], value: fee,
+    })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    return { content: [{ type: 'text', text: `Registered "${label}.attn"\nTx: ${receipt.transactionHash}\nFee: ${formatEther(fee)} ETH` }] }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('insufficient funds')) {
+      return { content: [{ type: 'text', text: `Insufficient ETH on Base. Need at least ${formatEther(fee)} ETH + gas.\nFund your address: ${state.address}` }], isError: true }
+    }
+    return { content: [{ type: 'text', text: `Registration failed: ${msg}` }], isError: true }
+  }
+}
+
+async function handleLookup(query: string) {
+  if (!query) return { content: [{ type: 'text', text: 'Query is required' }], isError: true }
+
+  // Forward lookup: name → address
+  if (!query.startsWith('0x')) {
+    const label = query.toLowerCase().replace(/\.attn$/, '')
+    if (state.ws && state.authenticated) {
+      const resolved = await requestResolve(label)
+      if (!resolved) return { content: [{ type: 'text', text: `"${label}.attn" is not registered.` }] }
+      return { content: [{ type: 'text', text: `${label}.attn → ${resolved.address}${resolved.publicKey ? ' (connected)' : ' (never connected)'}` }] }
+    }
+    // Fallback: direct RPC
+    const publicClient = getBasePublicClient()
+    const [owner] = await publicClient.readContract({
+      address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'resolve', args: [label],
+    }) as [string, string]
+    if (owner === '0x0000000000000000000000000000000000000000') {
+      return { content: [{ type: 'text', text: `"${label}.attn" is not registered.` }] }
+    }
+    return { content: [{ type: 'text', text: `${label}.attn → ${owner}` }] }
+  }
+
+  // Reverse lookup: address → primary name
+  const publicClient = getBasePublicClient()
+  const name = await publicClient.readContract({
+    address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'primaryNameOf', args: [query as `0x${string}`],
+  }) as string
+  if (!name) return { content: [{ type: 'text', text: `No primary .attn name set for ${query}` }] }
+  return { content: [{ type: 'text', text: `${query} → ${name}.attn` }] }
+}
+
+async function handleNames(address?: string) {
+  const target = (address ?? state.address).toLowerCase()
+
+  // Use relay endpoint
+  if (state.ws && state.authenticated) {
+    try {
+      const relayBase = getRelayHttpUrl().replace('/ws', '').replace('wss://', 'https://').replace('ws://', 'http://')
+      const resp = await fetch(`${relayBase}/names?address=${encodeURIComponent(target)}`)
+      if (resp.ok) {
+        const result = (await resp.json()) as { names: string[] }
+        if (result.names.length === 0) return { content: [{ type: 'text', text: `No .attn names found for ${target}` }] }
+        const nameList = result.names.map(n => `  ${n}.attn`).join('\n')
+        return { content: [{ type: 'text', text: `Names owned by ${target}:\n${nameList}` }] }
+      }
+    } catch {}
+  }
+
+  // Fallback: just show count
+  const publicClient = getBasePublicClient()
+  const count = await publicClient.readContract({
+    address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'balanceOf', args: [target as `0x${string}`],
+  }) as bigint
+  return { content: [{ type: 'text', text: `${target} owns ${count.toString()} .attn name(s). Connect to relay for full listing.` }] }
+}
+
+async function handleTransferName(label: string, to: string) {
+  if (!to || !/^0x[0-9a-fA-F]{40}$/.test(to)) {
+    return { content: [{ type: 'text', text: 'Invalid recipient address' }], isError: true }
+  }
+  label = label.toLowerCase().replace(/\.attn$/, '')
+
+  const publicClient = getBasePublicClient()
+  const node = await publicClient.readContract({
+    address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'namehash', args: [label],
+  }) as `0x${string}`
+  const tokenId = BigInt(node)
+
+  try {
+    const owner = await publicClient.readContract({
+      address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'ownerOf', args: [tokenId],
+    }) as string
+    if (owner.toLowerCase() !== state.address.toLowerCase()) {
+      return { content: [{ type: 'text', text: `You don't own "${label}.attn". Owner: ${owner}` }], isError: true }
+    }
+  } catch {
+    return { content: [{ type: 'text', text: `"${label}.attn" is not registered.` }], isError: true }
+  }
+
+  try {
+    const walletClient = getBaseWalletClient()
+    const hash = await walletClient.writeContract({
+      address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'transferFrom',
+      args: [state.address as `0x${string}`, to as `0x${string}`, tokenId],
+    })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    return { content: [{ type: 'text', text: `Transferred "${label}.attn" to ${to}\nTx: ${receipt.transactionHash}` }] }
+  } catch (err) {
+    return { content: [{ type: 'text', text: `Transfer failed: ${err instanceof Error ? err.message : String(err)}` }], isError: true }
+  }
+}
+
+async function handleSetPrimaryName(label: string) {
+  label = label.toLowerCase().replace(/\.attn$/, '')
+
+  try {
+    const walletClient = getBaseWalletClient()
+    const publicClient = getBasePublicClient()
+    const hash = await walletClient.writeContract({
+      address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'setPrimaryName', args: [label],
+    })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    return { content: [{ type: 'text', text: `Primary name set to "${label}.attn"\nTx: ${receipt.transactionHash}` }] }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { content: [{ type: 'text', text: `Failed: ${msg}` }], isError: true }
+  }
+}
+
 function handleHistory(peer: string, limit: number) {
   const messages = getHistory(peer, limit)
   if (messages.length === 0) {
@@ -767,10 +1036,20 @@ function handleHistory(peer: string, limit: number) {
   return { content: [{ type: 'text', text: `${header}:\n${formatted}` }] }
 }
 
-function handleAddContact(address: string, name?: string) {
+async function handleAddContact(address: string, name?: string) {
   if (!address || !isValidAddress(address)) {
     return { content: [{ type: 'text', text: 'Invalid Ethereum address' }], isError: true }
   }
+
+  // .attn name always overrides manual name (verified on-chain identity)
+  try {
+    const relayBase = getRelayHttpUrl()
+    const resp = await fetch(`${relayBase}/primary?address=${encodeURIComponent(address.toLowerCase())}`)
+    if (resp.ok) {
+      const result = (await resp.json()) as { name: string | null }
+      if (result.name) name = result.name
+    }
+  } catch {}
 
   const flushed = addContactAndDeliverPending(address, name)
   const label = name ? `${name} (${address})` : address

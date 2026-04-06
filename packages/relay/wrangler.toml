@@ -11,7 +11,8 @@ routes = [
 [durable_objects]
 bindings = [
   { name = "AGENT_MAILBOX", class_name = "AgentMailbox" },
-  { name = "GROUP_MAILBOX", class_name = "GroupMailbox" }
+  { name = "GROUP_MAILBOX", class_name = "GroupMailbox" },
+  { name = "NAME_INDEXER", class_name = "NameIndexer" }
 ]
 
 [[r2_buckets]]
@@ -25,3 +26,7 @@ new_sqlite_classes = ["AgentMailbox"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["GroupMailbox"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["NameIndexer"]

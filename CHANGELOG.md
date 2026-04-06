@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.0] - 2026-04-06
+
+### Added
+
+- `.attn` name resolution in `send` — `send("alice.attn", "hey")` resolves on-chain and delivers via relay
+- 5 new name tools: `register_name`, `lookup`, `names`, `transfer_name`, `set_primary_name`
+- NameIndexer Durable Object on relay — caches name ownership via event subscription, resolves on-chain for freshness
+- `from_name` in message delivery — relay includes sender's `.attn` name (primary or fallback) in every message
+- Contact name auto-sync — `.attn` names update automatically on inbound messages, stale names cleared on transfer
+- `.attn` name override on `add_contact` — verified on-chain identity always takes priority over manual names
+- Pending notifications show `.attn` names — `pending message from elpabl0.attn` instead of raw address
+- Relay `/resolve`, `/names`, `/primary` HTTP endpoints for name resolution
+- `getPeersDir()` respects `ATTN_STATE_DIR` for test isolation
+- `ATTN_BASE_RPC` env var for overriding the default Base RPC endpoint
+
 ## [0.4.4] - 2026-04-06
 
 ### Added
@@ -197,6 +212,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.0
 [0.4.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.4
 [0.4.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.3
 [0.4.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.2

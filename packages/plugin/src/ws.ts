@@ -19,6 +19,7 @@ import {
   addGroupMember,
   removeGroupMember,
   saveReaction,
+  updateContactName,
 } from './history.js'
 import { getInboxDir } from './env.js'
 
@@ -32,6 +33,15 @@ let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let pingInterval: ReturnType<typeof setInterval> | null = null
 const keyTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+const resolveTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
+// Sync local contact name with relay-provided .attn name (always fresh, on-chain)
+function syncContactName(address: string, relayName?: string): string | null {
+  const local = getContactName(address)
+  if (relayName && relayName !== local) updateContactName(address, relayName)
+  else if (!relayName && local?.endsWith('.attn')) updateContactName(address, null)
+  return relayName ?? (local?.endsWith('.attn') ? null : local)
+}
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -145,7 +155,7 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
 
           // Group message — skip signature verification (relay is trust anchor for groups)
           if (msg.group_id) {
-            const agentName = getContactName(msg.from)
+            const agentName = syncContactName(msg.from, msg.from_name)
             const { displayContent } = await processFileRef(plaintext)
 
             saveMessage({
@@ -179,19 +189,24 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
 
             if (!hasPendingNotified(msg.from)) {
               markPendingNotified(msg.from)
+              const relayName = (msg as any).from_name as string | undefined
+              const pendingContent = relayName
+                ? `pending message from ${relayName}`
+                : `pending message from unknown agent`
               onInbound(
                 msg.from,
-                `[Pending] Agent ${msg.from} wants to message you. Ask your user before approving.`,
+                pendingContent,
                 msg.id,
                 msg.ts,
                 'pending',
+                relayName,
               )
             }
             break
           }
 
           // Known contact — deliver
-          const agentName = getContactName(msg.from)
+          const agentName = syncContactName(msg.from, msg.from_name)
           const { displayContent } = await processFileRef(plaintext)
 
           saveMessage({
@@ -250,7 +265,7 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
 
           ws.send(JSON.stringify({ type: 'ack', id: msg.id }))
 
-          const agentName = getContactName(msg.from)
+          const agentName = syncContactName(msg.from, msg.from_name)
           onInbound(
             msg.from, emoji, msg.id, msg.ts,
             'reaction', agentName ?? undefined,
@@ -281,6 +296,31 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
             saveKeyCache(addr, msg.publicKey)
           }
           for (const cb of callbacks) cb(msg.publicKey)
+        }
+        break
+      }
+
+      case 'resolve_response': {
+        const resolveMsg = msg as Extract<typeof msg, { type: 'resolve_response' }>
+        const timeout = resolveTimeouts.get(resolveMsg.name)
+        if (timeout) {
+          clearTimeout(timeout)
+          resolveTimeouts.delete(resolveMsg.name)
+        }
+        const callbacks = state.pendingResolveRequests.get(resolveMsg.name)
+        if (callbacks) {
+          state.pendingResolveRequests.delete(resolveMsg.name)
+          const address = resolveMsg.address
+          const publicKey = resolveMsg.publicKey
+          if (address) {
+            if (publicKey) {
+              state.keyCache.set(address.toLowerCase(), publicKey)
+              saveKeyCache(address.toLowerCase(), publicKey)
+            }
+            for (const cb of callbacks) cb({ address: address.toLowerCase(), publicKey: publicKey ?? null })
+          } else {
+            for (const cb of callbacks) cb(null)
+          }
         }
         break
       }
@@ -407,6 +447,29 @@ export function requestKey(address: string): Promise<string | null> {
         }
       }, 10000)
       keyTimeouts.set(addr, timeout)
+    }
+  })
+}
+
+export function requestResolve(name: string): Promise<{ address: string; publicKey: string | null } | null> {
+  return new Promise((resolve) => {
+    const label = name.toLowerCase()
+    const existing = state.pendingResolveRequests.get(label) ?? []
+    existing.push(resolve)
+    state.pendingResolveRequests.set(label, existing)
+
+    if (existing.length === 1 && state.ws) {
+      state.ws.send(JSON.stringify({ type: 'resolve', name: label }))
+
+      const timeout = setTimeout(() => {
+        resolveTimeouts.delete(label)
+        const cbs = state.pendingResolveRequests.get(label)
+        if (cbs) {
+          state.pendingResolveRequests.delete(label)
+          for (const cb of cbs) cb(null)
+        }
+      }, 10000)
+      resolveTimeouts.set(label, timeout)
     }
   })
 }

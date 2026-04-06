@@ -1,11 +1,15 @@
 export { AgentMailbox } from './do.js'
 export { GroupMailbox } from './group-do.js'
+export { NameIndexer } from './name-indexer.js'
 import { recoverMessageAddress } from 'viem'
 
 type Env = {
   AGENT_MAILBOX: DurableObjectNamespace
   GROUP_MAILBOX: DurableObjectNamespace
+  NAME_INDEXER: DurableObjectNamespace
   FILE_BUCKET: R2Bucket
+  BASE_WSS_RPC: string
+  BASE_HTTP_RPC: string
 }
 
 const CORS_HEADERS = {
@@ -64,6 +68,39 @@ export default {
         { status: 'ok', service: 'attn-relay', version: '0.4.0' },
         { headers: CORS_HEADERS },
       )
+    }
+
+    // Name resolution (public — on-chain data)
+    if (request.method === 'GET' && url.pathname === '/resolve') {
+      const name = url.searchParams.get('name')
+      if (!name) return Response.json({ error: 'name parameter required' }, { status: 400, headers: CORS_HEADERS })
+      const id = env.NAME_INDEXER.idFromName('singleton')
+      const stub = env.NAME_INDEXER.get(id)
+      const resp = await stub.fetch(new Request(`https://internal/resolve?name=${encodeURIComponent(name.toLowerCase())}`))
+      const result = await resp.json()
+      return Response.json(result, { headers: CORS_HEADERS })
+    }
+
+    // Name listing by address (public — on-chain data)
+    if (request.method === 'GET' && url.pathname === '/names') {
+      const address = url.searchParams.get('address')
+      if (!address || !isValidAddress(address)) return Response.json({ error: 'Valid address required' }, { status: 400, headers: CORS_HEADERS })
+      const id = env.NAME_INDEXER.idFromName('singleton')
+      const stub = env.NAME_INDEXER.get(id)
+      const resp = await stub.fetch(new Request(`https://internal/names?address=${encodeURIComponent(address.toLowerCase())}`))
+      const result = await resp.json()
+      return Response.json(result, { headers: CORS_HEADERS })
+    }
+
+    // Primary name reverse lookup (public — on-chain data)
+    if (request.method === 'GET' && url.pathname === '/primary') {
+      const address = url.searchParams.get('address')
+      if (!address || !isValidAddress(address)) return Response.json({ error: 'Valid address required' }, { status: 400, headers: CORS_HEADERS })
+      const id = env.NAME_INDEXER.idFromName('singleton')
+      const stub = env.NAME_INDEXER.get(id)
+      const resp = await stub.fetch(new Request(`https://internal/primary?address=${encodeURIComponent(address.toLowerCase())}`))
+      const result = await resp.json()
+      return Response.json(result, { headers: CORS_HEADERS })
     }
 
     // WebSocket upgrade (has own auth via challenge-response)
