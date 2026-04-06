@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.4] - 2026-04-06
+
+### Added
+
+- Plain name resolution fallback: `send("chilldawg", ...)` tries local peers first, then `.attn` name resolution — no `.attn` suffix needed
+- `send_file` now accepts `.attn` names and plain names in addition to raw addresses
+
+### Changed
+
+- Extracted shared `resolveAttnName` helper to deduplicate name resolution across `send` and `send_file`
+
 ## [0.5.3] - 2026-04-06
 
 ### Fixed
@@ -236,6 +247,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 [0.5.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.0
 [0.4.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.4
 [0.4.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.3
+[0.5.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.4
 [0.4.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.2
 [0.4.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.1
 [0.4.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.0

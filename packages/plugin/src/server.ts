@@ -132,7 +132,7 @@ export function createServer(identityLine?: string) {
     tools: [
       {
         name: 'send',
-        description: 'Send a message to another agent by address, or to a local session by name.',
+        description: 'Send a message to another agent by address, .attn name, or local session name. Plain names (e.g. "chilldawg") try local peers first, then .attn name resolution.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -488,6 +488,31 @@ function isValidAddress(addr: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(addr)
 }
 
+async function resolveAttnName(label: string): Promise<{ address: string; publicKey?: string } | null> {
+  if (!state.ws || !state.authenticated) return null
+  const resolved = await requestResolve(label)
+  if (!resolved) return null
+  if (resolved.publicKey) state.keyCache.set(resolved.address, resolved.publicKey)
+  addContactAndDeliverPending(resolved.address, label + '.attn')
+  return { address: resolved.address, publicKey: resolved.publicKey }
+}
+
+async function sendToResolvedName(label: string, message: string): Promise<{ content: { type: string; text: string }[]; isError?: boolean } | null> {
+  const resolved = await resolveAttnName(label)
+  if (!resolved) return null
+  const publicKey = resolved.publicKey ?? await requestKey(resolved.address)
+  if (!publicKey) {
+    return { content: [{ type: 'text', text: `Resolved ${label}.attn → ${resolved.address}, but agent has never connected (no public key).` }], isError: true }
+  }
+  const encrypted = encryptMessage(publicKey, message)
+  const id = crypto.randomUUID()
+  const envelope = { id, to: resolved.address, encrypted }
+  const signature = await signEnvelope(state.account!, envelope)
+  state.ws.send(JSON.stringify({ type: 'message', id, to: resolved.address, encrypted, signature }))
+  saveMessage({ id, peer: resolved.address, direction: 'outbound', content: message, ts: new Date().toISOString() })
+  return { content: [{ type: 'text', text: `Message sent to ${label}.attn (${resolved.address})` }] }
+}
+
 async function handleSend(to: string, message: string) {
   if (!to) {
     return { content: [{ type: 'text', text: 'Recipient is required' }], isError: true }
@@ -528,39 +553,27 @@ async function handleSend(to: string, message: string) {
     if (!state.ws || !state.authenticated) {
       return { content: [{ type: 'text', text: 'Not connected to relay. Cannot resolve .attn name.' }], isError: true }
     }
-    const resolved = await requestResolve(label)
-    if (!resolved) {
-      return { content: [{ type: 'text', text: `Name "${to}" not found. It may not be registered.` }], isError: true }
-    }
-    // Cache public key and auto-add contact
-    if (resolved.publicKey) state.keyCache.set(resolved.address, resolved.publicKey)
-    addContactAndDeliverPending(resolved.address, label + '.attn')
-
-
-    const publicKey = resolved.publicKey ?? await requestKey(resolved.address)
-    if (!publicKey) {
-      return { content: [{ type: 'text', text: `Resolved ${to} → ${resolved.address}, but agent has never connected (no public key).` }], isError: true }
-    }
-
-    const encrypted = encryptMessage(publicKey, message)
-    const id = crypto.randomUUID()
-    const envelope = { id, to: resolved.address, encrypted }
-    const signature = await signEnvelope(state.account!, envelope)
-    state.ws.send(JSON.stringify({ type: 'message', id, to: resolved.address, encrypted, signature }))
-    saveMessage({ id, peer: resolved.address, direction: 'outbound', content: message, ts: new Date().toISOString() })
-    return { content: [{ type: 'text', text: `Message sent to ${label}.attn (${resolved.address})` }] }
+    const result = await sendToResolvedName(label, message)
+    if (result) return result
+    return { content: [{ type: 'text', text: `Name "${to}" not found. It may not be registered.` }], isError: true }
   }
 
   // 3. Check if 'to' is a local session name (not an address)
   if (!to.startsWith('0x')) {
     const peer = getLocalPeer(to)
-    if (!peer) {
-      return {
-        content: [{ type: 'text', text: `No local session named "${to}" is running. Use 'peers' to see available sessions.` }],
-        isError: true,
-      }
+    if (peer) {
+      return await handleSendLocal(to, message)
     }
-    return await handleSendLocal(to, message)
+    // Fallback: try .attn name resolution before erroring
+    const label = to.toLowerCase()
+    if (label.length >= 3) {
+      const result = await sendToResolvedName(label, message)
+      if (result) return result
+    }
+    return {
+      content: [{ type: 'text', text: `No local session or .attn name "${to}" found. Use 'peers' to see local sessions.` }],
+      isError: true,
+    }
   }
 
   // 2. Check if address matches a local session
@@ -805,8 +818,20 @@ async function handleReact(emoji: string, messageId?: string) {
 }
 
 async function handleSendFile(to: string, path: string) {
-  if (!to || !isValidAddress(to)) {
-    return { content: [{ type: 'text', text: 'Invalid Ethereum address' }], isError: true }
+  if (!to) {
+    return { content: [{ type: 'text', text: 'Recipient is required' }], isError: true }
+  }
+  // Resolve .attn name to address
+  if (!isValidAddress(to)) {
+    const label = to.replace(/\.attn$/, '').toLowerCase()
+    if (label.length < 3) {
+      return { content: [{ type: 'text', text: `Invalid recipient: "${to}"` }], isError: true }
+    }
+    const resolved = await resolveAttnName(label)
+    if (!resolved) {
+      return { content: [{ type: 'text', text: `Name "${label}.attn" not found or not connected to relay.` }], isError: true }
+    }
+    to = resolved.address
   }
   if (!state.ws || !state.authenticated) {
     return { content: [{ type: 'text', text: 'Not connected to relay. Cannot send file.' }], isError: true }
