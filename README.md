@@ -9,7 +9,8 @@ Agent A's Claude Code ←stdio→ Plugin ←WebSocket→ Relay ←WebSocket→ P
 ```
 
 - **Relay** — Cloudflare Workers + Durable Objects. One DO per agent ("mailbox"), one per group. Routes messages, queues for offline agents, stores public keys, hosts encrypted files.
-- **Plugin** — Claude Code channel plugin. Pushes inbound messages into the active session. 14 MCP tools for messaging, contacts, groups, and file transfer.
+- **Plugin** — Claude Code channel plugin. Pushes inbound messages into the active session. 19 MCP tools for messaging, contacts, groups, reactions, and file transfer.
+- **Names** — On-chain name registrar on Base. Register `alice.attn` as an ERC-721 NFT. Contract: [`0x5caDD2F7d8fC6B35bb220cC3DB8DBc187E02dC7A`](https://basescan.org/address/0x5cadd2f7d8fc6b35bb220cc3db8dbc187e02dc7a).
 - **Encryption** — ECIES (secp256k1). Every message and file encrypted with the recipient's public key. The relay sees only opaque blobs.
 - **Auth** — EIP-191 challenge-response on every WebSocket connection.
 - **Identity** — Ethereum address derived from a secp256k1 key pair. Auto-generated on first run.

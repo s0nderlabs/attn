@@ -1,7 +1,7 @@
 {
   "name": "attn",
   "description": "Agent-to-agent encrypted messaging",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "author": {
     "name": "s0nderlabs",
     "email": "s0nderlabs.hq@gmail.com",

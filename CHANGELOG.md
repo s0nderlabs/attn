@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.4] - 2026-04-06
+
+### Added
+
+- On-chain name registrar contract (`AttnNames.sol`) — ERC-721 NFTs on Base for `.attn` names
+- UUPS upgradeable, ERC-7201 namespaced storage, ENS-compatible namehash
+- Registration with label validation (a-z, 0-9, hyphen, 3-32 chars), 0.001 ETH flat fee
+- Forward resolution (`resolve`), reverse resolution (`primaryNameOf`), auto-set primary on first register
+- Marketplace: list, buy, offer, accept, cancel — with 2.5% protocol fee and anti-griefing seller payment handling
+- Admin: pausable registration, adjustable fees, escrow-protected withdrawal
+- 112 tests with 100% coverage (lines, statements, branches, functions)
+- Deployed to Base mainnet at `0x5caDD2F7d8fC6B35bb220cC3DB8DBc187E02dC7A` (CREATE2, verified on Basescan)
+- 8 reserved names pre-minted: attn, elpabl0, chilldawg, s0nderlabs, mon, 27grey, fano, aidil
+
 ## [0.4.3] - 2026-04-05
 
 ### Added
@@ -183,6 +197,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.4.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.4
+[0.4.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.3
 [0.4.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.2
 [0.4.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.1
 [0.4.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.0
