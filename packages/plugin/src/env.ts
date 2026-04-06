@@ -52,7 +52,7 @@ export function loadEnvFile(): void {
   const envFile = join(getStateDir(), ENV_FILE_NAME)
   try {
     try { chmodSync(envFile, 0o600) } catch {} // no-op on Windows
-    for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    for (const line of readFileSync(envFile, 'utf8').split(/\r?\n/)) {
       const m = line.match(/^(\w+)=(.*)$/)
       if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2]
     }

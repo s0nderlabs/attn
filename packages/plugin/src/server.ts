@@ -1,3 +1,4 @@
+import { basename } from 'path'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import {
@@ -844,7 +845,7 @@ async function handleSendFile(to: string, path: string) {
   }
 
   const { url } = (await uploadResp.json()) as { url: string; key: string }
-  const filename = path.split('/').pop() ?? 'file'
+  const filename = basename(path)
   const mime = file.type || 'application/octet-stream'
   const fileRef = JSON.stringify({ type: 'file', url, key: fileKey, filename, size: file.size, mime })
 

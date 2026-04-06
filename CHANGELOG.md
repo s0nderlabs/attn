@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.3] - 2026-04-06
+
+### Fixed
+
+- Windows: correct named pipe prefix `\\.\pipe\` for local messaging (was `\\?\pipe\`)
+- Windows: use `basename()` for cross-platform filename extraction in `send_file`
+- Windows: handle CRLF line endings when reading `.env` files
+
 ## [0.5.2] - 2026-04-06
 
 ### Fixed

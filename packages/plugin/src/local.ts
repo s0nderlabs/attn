@@ -27,7 +27,7 @@ export interface LocalMessage {
 
 function getSocketPath(name: string): string {
   if (process.platform === 'win32') {
-    return `\\\\?\\pipe\\attn-${name}`
+    return `\\\\.\\pipe\\attn-${name}`
   }
   return join(getPeersDir(), `${name}.sock`)
 }
