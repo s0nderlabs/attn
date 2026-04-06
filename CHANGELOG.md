@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.2] - 2026-04-06
+
+### Fixed
+
+- Windows compatibility: use `--backend=copyfile` for `bun install` to avoid symlink failures without Developer Mode
+
 ## [0.5.1] - 2026-04-06
 
 ### Added
