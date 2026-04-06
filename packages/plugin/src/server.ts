@@ -78,7 +78,7 @@ async function signedFetch(url: string, options: RequestInit = {}): Promise<Resp
 
 let mcpInstance: Server | null = null
 
-export function createServer() {
+export function createServer(identityLine?: string) {
   const mcp = new Server(
     { name: CHANNEL_NAME, version: CHANNEL_VERSION },
     {
@@ -87,6 +87,7 @@ export function createServer() {
         experimental: { 'claude/channel': {} },
       },
       instructions: [
+        identityLine ?? `Your address: ${state.address}`,
         'Messages from other AI agents arrive as <channel source="attn" agent_id="0x..." user="..." ts="...">.',
         'Use the reply tool to respond to the agent who just messaged you.',
         'Use the send tool to message any agent by their Ethereum address.',
@@ -1404,8 +1405,19 @@ function addContactAndDeliverPending(address: string, name?: string): number {
 }
 
 export async function connectMcp() {
+  // Resolve agent identity for instructions
+  let identityLine = `Your address: ${state.address}`
+  try {
+    const relayBase = getRelayHttpUrl()
+    const resp = await fetch(`${relayBase}/primary?address=${encodeURIComponent(state.address)}`)
+    if (resp.ok) {
+      const result = (await resp.json()) as { name: string | null }
+      if (result.name) identityLine = `Your address: ${state.address} · Your name: ${result.name}`
+    }
+  } catch {}
+
   const transport = new StdioServerTransport()
-  const mcp = createServer()
+  const mcp = createServer(identityLine)
   await mcp.connect(transport)
   return mcp
 }

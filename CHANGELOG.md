@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.1] - 2026-04-06
+
+### Added
+
+- Agent identity in MCP instructions — agents know their address and `.attn` name on startup without tool calls
+
 ## [0.5.0] - 2026-04-06
 
 ### Added
@@ -212,6 +218,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.1
 [0.5.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.0
 [0.4.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.4
 [0.4.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.3
