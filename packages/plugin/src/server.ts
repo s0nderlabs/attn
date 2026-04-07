@@ -452,15 +452,15 @@ export function createServer(identityLine?: string) {
         case 'react':
           return await handleReact(args.emoji as string, args.message_id as string | undefined)
         case 'register_name':
-          return await handleRegisterName(args.label as string)
+          return await handleRegisterName((args.label ?? args.name) as string)
         case 'lookup':
           return await handleLookup(args.query as string)
         case 'names':
           return await handleNames(args.address as string | undefined)
         case 'transfer_name':
-          return await handleTransferName(args.label as string, args.to as string)
+          return await handleTransferName((args.label ?? args.name) as string, args.to as string)
         case 'set_primary_name':
-          return await handleSetPrimaryName(args.label as string)
+          return await handleSetPrimaryName((args.label ?? args.name) as string)
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${req.params.name}` }], isError: true }
       }
@@ -880,7 +880,7 @@ async function handleSendFile(to: string, path: string) {
 // ── Name Tools ──────────────────────────────────────────────────────────
 
 async function handleRegisterName(label: string) {
-  if (!label) return { content: [{ type: 'text', text: 'Label is required' }], isError: true }
+  if (!label) return { content: [{ type: 'text', text: 'Label is required (pass as "label" or "name")' }], isError: true }
   label = label.toLowerCase().replace(/\.attn$/, '')
   if (label.length < 3 || label.length > 32) {
     return { content: [{ type: 'text', text: 'Label must be 3-32 characters' }], isError: true }
@@ -970,6 +970,7 @@ async function handleNames(address?: string) {
 }
 
 async function handleTransferName(label: string, to: string) {
+  if (!label) return { content: [{ type: 'text', text: 'Label is required (pass as "label" or "name")' }], isError: true }
   if (!to || !/^0x[0-9a-fA-F]{40}$/.test(to)) {
     return { content: [{ type: 'text', text: 'Invalid recipient address' }], isError: true }
   }
@@ -1006,6 +1007,7 @@ async function handleTransferName(label: string, to: string) {
 }
 
 async function handleSetPrimaryName(label: string) {
+  if (!label) return { content: [{ type: 'text', text: 'Label is required (pass as "label" or "name")' }], isError: true }
   label = label.toLowerCase().replace(/\.attn$/, '')
 
   try {

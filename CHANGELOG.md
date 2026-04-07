@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.5] - 2026-04-07
+
+### Fixed
+
+- `transfer_name`, `register_name`, `set_primary_name` now accept `name` as alias for `label` parameter — previously crashed with `undefined is not an object (evaluating 'label.toLowerCase')` when called with `name=`
+- Added input guards to `transfer_name` and `set_primary_name` for missing label
+
 ## [0.5.4] - 2026-04-06
 
 ### Added
@@ -243,6 +250,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.5
 [0.5.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.1
 [0.5.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.0
 [0.4.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.4
