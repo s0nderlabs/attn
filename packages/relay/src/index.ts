@@ -8,8 +8,9 @@ type Env = {
   GROUP_MAILBOX: DurableObjectNamespace
   NAME_INDEXER: DurableObjectNamespace
   FILE_BUCKET: R2Bucket
-  BASE_WSS_RPC: string
   BASE_HTTP_RPC: string
+  BASE_HYPERSYNC_URL: string
+  ENVIO_TOKEN_API: string
 }
 
 const CORS_HEADERS = {
@@ -99,6 +100,22 @@ export default {
       const id = env.NAME_INDEXER.idFromName('singleton')
       const stub = env.NAME_INDEXER.get(id)
       const resp = await stub.fetch(new Request(`https://internal/primary?address=${encodeURIComponent(address.toLowerCase())}`))
+      const result = await resp.json()
+      return Response.json(result, { headers: CORS_HEADERS })
+    }
+
+    // Indexer debug + manual sync trigger (public — diagnostic)
+    if (request.method === 'GET' && url.pathname === '/debug') {
+      const id = env.NAME_INDEXER.idFromName('singleton')
+      const stub = env.NAME_INDEXER.get(id)
+      const resp = await stub.fetch(new Request('https://internal/debug'))
+      const result = await resp.json()
+      return Response.json(result, { headers: CORS_HEADERS })
+    }
+    if (request.method === 'POST' && url.pathname === '/sync') {
+      const id = env.NAME_INDEXER.idFromName('singleton')
+      const stub = env.NAME_INDEXER.get(id)
+      const resp = await stub.fetch(new Request('https://internal/sync', { method: 'POST' }))
       const result = await resp.json()
       return Response.json(result, { headers: CORS_HEADERS })
     }

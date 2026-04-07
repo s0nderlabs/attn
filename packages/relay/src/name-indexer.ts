@@ -11,8 +11,22 @@ const resolveAbi = [
 type Env = {
   AGENT_MAILBOX: DurableObjectNamespace
   NAME_INDEXER: DurableObjectNamespace
-  BASE_WSS_RPC: string
   BASE_HTTP_RPC: string
+  BASE_HYPERSYNC_URL: string
+  ENVIO_TOKEN_API: string
+}
+
+// HyperSync log shape — separate topic fields, block_number as integer
+interface HyperSyncLog {
+  block_number?: number
+  transaction_hash?: string
+  log_index?: number
+  address?: string
+  topic0?: string
+  topic1?: string
+  topic2?: string
+  topic3?: string
+  data?: string
 }
 
 const CONTRACT_ADDRESS = '0x5caDD2F7d8fC6B35bb220cC3DB8DBc187E02dC7A'
@@ -25,8 +39,6 @@ const NAME_REGISTERED_TOPIC = keccak256(toHex('NameRegistered(bytes32,string,add
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 
 export class NameIndexer extends DurableObject<Env> {
-  private ws: WebSocket | null = null
-  private wsConnected = false
   private primaryCache = new Map<string, { name: string | null; ts: number }>()
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -115,94 +127,50 @@ export class NameIndexer extends DurableObject<Env> {
     }
 
     if (url.pathname === '/sync' && request.method === 'POST') {
-      await this.pollLogs()
-      return Response.json({ synced: true })
+      try {
+        const result = await this.syncFromHyperSync()
+        return Response.json({ synced: true, ...result })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        return Response.json({ synced: false, error: msg }, { status: 500 })
+      }
+    }
+
+    if (url.pathname === '/debug') {
+      const lastBlockRows = [...this.ctx.storage.sql.exec<{ value: string }>(
+        `SELECT value FROM sync_state WHERE key = 'last_block'`
+      )]
+      const namesCount = [...this.ctx.storage.sql.exec<{ c: number }>(
+        `SELECT COUNT(*) as c FROM names`
+      )][0]?.c ?? 0
+      return Response.json({
+        last_block: lastBlockRows.length > 0 ? parseInt(lastBlockRows[0].value) : null,
+        names_count: namesCount,
+        primary_cache_size: this.primaryCache.size,
+      })
     }
 
     return new Response('Not found', { status: 404 })
   }
 
   async alarm(): Promise<void> {
-    // Ensure WSS subscription is alive
-    if (!this.wsConnected) {
-      await this.connectWss()
-    }
-
-    // Also do an eth_getLogs poll to catch any missed events
     try {
-      await this.pollLogs()
-    } catch {}
-
-    // Reschedule alarm
+      await this.syncFromHyperSync()
+    } catch (err) {
+      console.error('NameIndexer sync failed:', err instanceof Error ? err.message : String(err))
+    }
+    // Always reschedule, even on error
     await this.ctx.storage.setAlarm(Date.now() + ALARM_INTERVAL_MS)
   }
 
-  private async connectWss(): Promise<void> {
-    if (!this.env.BASE_WSS_RPC) {
-      // No WSS configured — rely on polling only
-      return
-    }
-
-    try {
-      // Close existing connection if any
-      if (this.ws) {
-        try { this.ws.close() } catch {}
-        this.ws = null
-      }
-
-      const resp = await fetch(this.env.BASE_WSS_RPC, {
-        headers: { Upgrade: 'websocket' },
-      })
-
-      const ws = resp.webSocket
-      if (!ws) return
-
-      ws.accept()
-      this.ws = ws
-      this.wsConnected = true
-
-      // Subscribe to NameRegistered + Transfer events
-      ws.send(JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'eth_subscribe',
-        params: ['logs', {
-          address: CONTRACT_ADDRESS,
-          topics: [[NAME_REGISTERED_TOPIC, TRANSFER_TOPIC]],
-        }],
-      }))
-
-      ws.addEventListener('message', (event) => {
-        try {
-          const data = JSON.parse(typeof event.data === 'string' ? event.data : new TextDecoder().decode(event.data as ArrayBuffer))
-          if (data.method === 'eth_subscription' && data.params?.result) {
-            this.handleLog(data.params.result)
-          }
-        } catch {}
-      })
-
-      ws.addEventListener('close', () => {
-        this.wsConnected = false
-        this.ws = null
-      })
-
-      ws.addEventListener('error', () => {
-        this.wsConnected = false
-        try { this.ws?.close() } catch {}
-        this.ws = null
-      })
-    } catch {
-      this.wsConnected = false
-      this.ws = null
-    }
-  }
-
-  private handleLog(log: { topics: string[]; data: string; blockNumber: string }): void {
-    const topic0 = log.topics[0]
+  private handleLog(log: HyperSyncLog): void {
+    const topic0 = log.topic0
 
     if (topic0 === NAME_REGISTERED_TOPIC) {
       // NameRegistered(bytes32 indexed node, string label, address indexed owner, uint256 tokenId)
-      // topics[1] = node, topics[2] = owner (padded)
-      const owner = ('0x' + log.topics[2].slice(26)).toLowerCase()
-      // Decode non-indexed params: (string label, uint256 tokenId)
+      // topic1 = node, topic2 = owner (padded)
+      if (!log.topic2 || !log.data) return
+      const owner = ('0x' + log.topic2.slice(26)).toLowerCase()
       const decoded = decodeAbiParameters(
         [{ name: 'label', type: 'string' }, { name: 'tokenId', type: 'uint256' }],
         log.data as `0x${string}`
@@ -214,10 +182,13 @@ export class NameIndexer extends DurableObject<Env> {
         `INSERT OR REPLACE INTO names (label, address, token_id, updated_at) VALUES (?, ?, ?, ?)`,
         label, owner, tokenId, Date.now()
       )
+      this.primaryCache.delete(owner)
     } else if (topic0 === TRANSFER_TOPIC) {
       // Transfer(address indexed from, address indexed to, uint256 indexed tokenId)
-      const to = ('0x' + log.topics[2].slice(26)).toLowerCase()
-      const tokenId = BigInt(log.topics[3]).toString()
+      if (!log.topic1 || !log.topic2 || !log.topic3) return
+      const from = ('0x' + log.topic1.slice(26)).toLowerCase()
+      const to = ('0x' + log.topic2.slice(26)).toLowerCase()
+      const tokenId = BigInt(log.topic3).toString()
 
       if (to === '0x0000000000000000000000000000000000000000') {
         // Burn — delete name
@@ -229,44 +200,93 @@ export class NameIndexer extends DurableObject<Env> {
           to, Date.now(), tokenId
         )
       }
+      this.primaryCache.delete(from)
+      this.primaryCache.delete(to)
     }
-
-    // Update last synced block
-    const blockNum = parseInt(log.blockNumber, 16)
-    this.ctx.storage.sql.exec(
-      `INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_block', ?)`,
-      blockNum.toString()
-    )
   }
 
-  private async pollLogs(): Promise<void> {
+  private async syncFromHyperSync(): Promise<{ events: number; from_block: number; to_block: number; pages: number }> {
     const rows = [...this.ctx.storage.sql.exec<{ value: string }>(
       `SELECT value FROM sync_state WHERE key = 'last_block'`
     )]
-    const fromBlock = rows.length > 0 ? parseInt(rows[0].value) + 1 : DEPLOY_BLOCK
+    const startFromBlock = rows.length > 0 ? parseInt(rows[0].value) + 1 : DEPLOY_BLOCK
 
-    const body = JSON.stringify({
-      jsonrpc: '2.0', id: 1, method: 'eth_getLogs',
-      params: [{
-        address: CONTRACT_ADDRESS,
-        fromBlock: '0x' + fromBlock.toString(16),
-        toBlock: 'latest',
-        topics: [[NAME_REGISTERED_TOPIC, TRANSFER_TOPIC]],
-      }],
-    })
+    let currentFromBlock = startFromBlock
+    let totalEvents = 0
+    let archiveHeight = 0
+    let pages = 0
+    const MAX_PAGES = 50 // safety: HyperSync responses are large; never need more than this in one alarm
 
-    const resp = await fetch(this.env.BASE_HTTP_RPC, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    })
-    const result = (await resp.json()) as { result?: Array<{ topics: string[]; data: string; blockNumber: string }> }
+    while (pages < MAX_PAGES) {
+      pages++
 
-    if (result.result) {
-      for (const log of result.result) {
-        this.handleLog(log)
+      const body = JSON.stringify({
+        from_block: currentFromBlock,
+        // omit to_block to query up to archive head
+        logs: [{
+          address: [CONTRACT_ADDRESS.toLowerCase()],
+          topics: [[NAME_REGISTERED_TOPIC, TRANSFER_TOPIC]],
+        }],
+        field_selection: {
+          log: ['block_number', 'transaction_hash', 'log_index', 'address', 'topic0', 'topic1', 'topic2', 'topic3', 'data'],
+        },
+      })
+
+      const resp = await fetch(this.env.BASE_HYPERSYNC_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.env.ENVIO_TOKEN_API}`,
+        },
+        body,
+      })
+
+      if (!resp.ok) {
+        const text = await resp.text()
+        throw new Error(`HyperSync HTTP ${resp.status}: ${text.slice(0, 200)}`)
       }
+
+      const result = await resp.json() as {
+        data?: Array<{ logs?: HyperSyncLog[] }>
+        archive_height?: number
+        next_block?: number
+        error?: string
+      }
+
+      if (result.error) {
+        throw new Error(`HyperSync error: ${result.error}`)
+      }
+
+      archiveHeight = result.archive_height ?? archiveHeight
+
+      let pageEvents = 0
+      for (const batch of result.data ?? []) {
+        for (const log of batch.logs ?? []) {
+          this.handleLog(log)
+          pageEvents++
+        }
+      }
+      totalEvents += pageEvents
+
+      // Advance last_block to next_block - 1 (HyperSync's next_block is the start of the next page)
+      const nextBlock = result.next_block
+      if (nextBlock === undefined || nextBlock <= currentFromBlock) {
+        // No progress (shouldn't happen) — bail to avoid infinite loop
+        break
+      }
+
+      const newLastBlock = nextBlock - 1
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_block', ?)`,
+        newLastBlock.toString()
+      )
+      currentFromBlock = nextBlock
+
+      // Stop if we've caught up to the archive head
+      if (nextBlock > archiveHeight) break
     }
+
+    return { events: totalEvents, from_block: startFromBlock, to_block: archiveHeight, pages }
   }
 
   private async resolveOnChain(label: string): Promise<string | null> {
