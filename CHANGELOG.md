@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.6] - 2026-04-08
+
+### Fixed
+
+- `.attn` name resolution no longer hard-fails when the WebSocket is reconnecting or the recipient is offline. `send("chilldawg.attn", ...)` and `send_file` now cascade through WebSocket → HTTP `/resolve` → on-chain `resolve()` → local contacts DB, then delegate to the raw-address path so cached pubkeys queue offline messages the same way `send("0x...", ...)` already did. Previously the name path returned `"Not connected to relay. Cannot resolve .attn name."` even when sending by raw address worked fine.
+- `requestKey` no longer hangs forever when the WebSocket is disconnected and the pubkey is not cached — returns null immediately so callers surface a clean error instead of stalling for 10s.
+- `requestResolve` timeout reduced from 10s → 3s so the cascade falls through to HTTP/on-chain quickly when the relay is slow.
+- Offline outbox path now hydrates the in-memory key cache from the on-disk `key_cache` table, so sends survive plugin restarts when the recipient's pubkey was previously cached.
+- `send_file` no longer blocks on an unnecessary WebSocket check — file upload goes through signed HTTP, and delivery goes through the normal send path. Note: file sends still require the recipient's pubkey to be cached (in memory or on disk), since the file is encrypted client-side.
+
+### Changed
+
+- `Message sent to ...` and `Message queued for ...` now show `chilldawg.attn (0x4b4f…)` instead of just the raw address when sending by name.
+
 ## [0.5.5] - 2026-04-07
 
 ### Fixed

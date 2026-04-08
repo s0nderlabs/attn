@@ -173,6 +173,14 @@ export function getContactName(address: string): string | null {
   return row?.name ?? null
 }
 
+export function getContactByName(name: string): string | null {
+  const d = initDb()
+  const row = d
+    .query<{ address: string }, [string]>(`SELECT address FROM contacts WHERE lower(name) = ? LIMIT 1`)
+    .get(name.toLowerCase())
+  return row?.address ?? null
+}
+
 export function getContacts(): Array<{ address: string; name: string | null; added_at: string }> {
   const d = initDb()
   return d

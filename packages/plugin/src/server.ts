@@ -14,6 +14,7 @@ import {
   addContact,
   getContacts,
   getContactName,
+  getContactByName,
   removeContact,
   blockContact,
   unblockContact,
@@ -33,12 +34,13 @@ import {
   saveReaction,
   getReactionsForMessages,
   getMessageById,
+  getKeyCache,
 } from './history.js'
 import { requestKey, requestResolve } from './ws.js'
 import { getRelayHttpUrl, getInboxDir } from './env.js'
 import { getLocalPeers, getLocalPeer, sendLocal } from './local.js'
 import type { LocalMessage } from './local.js'
-import { createPublicClient, createWalletClient, http, formatEther } from 'viem'
+import { createPublicClient, createWalletClient, http, formatEther, zeroAddress } from 'viem'
 import { base } from 'viem/chains'
 import { privateKeyToAccount } from 'viem/accounts'
 import { ATTN_NAMES_ADDRESS, BASE_RPC_DEFAULT } from '@attn/shared/constants'
@@ -488,35 +490,80 @@ function isValidAddress(addr: string): boolean {
   return /^0x[0-9a-fA-F]{40}$/.test(addr)
 }
 
-async function resolveAttnName(label: string): Promise<{ address: string; publicKey?: string } | null> {
-  if (!state.ws || !state.authenticated) return null
-  const resolved = await requestResolve(label)
-  if (!resolved) return null
-  if (resolved.publicKey) state.keyCache.set(resolved.address, resolved.publicKey)
-  addContactAndDeliverPending(resolved.address, label + '.attn')
-  return { address: resolved.address, publicKey: resolved.publicKey }
+function normalizeLabel(input: string): string {
+  return input.toLowerCase().replace(/\.attn$/, '')
+}
+
+// Resolve a .attn label to an address. Falls through WS → HTTP → on-chain → stale
+// contacts DB so a flaky relay socket can't block sends to known contacts.
+async function resolveAttnName(label: string): Promise<string | null> {
+  label = normalizeLabel(label)
+  if (label.length < 3) return null
+
+  let address: string | null = null
+
+  if (state.ws && state.authenticated) {
+    const resolved = await requestResolve(label)
+    if (resolved) {
+      address = resolved.address
+      if (resolved.publicKey) state.keyCache.set(address, resolved.publicKey)
+    }
+    // Fall through on null — could be "not registered" OR a WS timeout, and we
+    // want HTTP/on-chain to confirm before giving up.
+  }
+
+  if (!address) {
+    try {
+      const resp = await fetch(
+        `${getRelayHttpUrl()}/resolve?name=${encodeURIComponent(label)}`,
+        { signal: AbortSignal.timeout(3000) },
+      )
+      if (resp.ok) {
+        const result = (await resp.json()) as { address: string | null }
+        if (result.address && result.address !== zeroAddress) {
+          address = result.address.toLowerCase()
+        }
+      }
+    } catch {}
+  }
+
+  if (!address) {
+    try {
+      const [owner] = await getBasePublicClient().readContract({
+        address: NAMES_ADDRESS,
+        abi: attnNamesAbi,
+        functionName: 'resolve',
+        args: [label],
+      }) as [string, string]
+      if (owner && owner !== zeroAddress) {
+        address = owner.toLowerCase()
+      }
+    } catch {}
+  }
+
+  if (!address) {
+    // Stale but offline-capable: only reached when every authoritative source failed.
+    const contactAddr = getContactByName(label + '.attn') ?? getContactByName(label)
+    if (contactAddr) address = contactAddr.toLowerCase()
+  }
+
+  if (address) addContactAndDeliverPending(address, label + '.attn')
+  return address
 }
 
 async function sendToResolvedName(label: string, message: string): Promise<{ content: { type: string; text: string }[]; isError?: boolean } | null> {
-  const resolved = await resolveAttnName(label)
-  if (!resolved) return null
-  const publicKey = resolved.publicKey ?? await requestKey(resolved.address)
-  if (!publicKey) {
-    return { content: [{ type: 'text', text: `Resolved ${label}.attn → ${resolved.address}, but agent has never connected (no public key).` }], isError: true }
-  }
-  const encrypted = encryptMessage(publicKey, message)
-  const id = crypto.randomUUID()
-  const envelope = { id, to: resolved.address, encrypted }
-  const signature = await signEnvelope(state.account!, envelope)
-  state.ws.send(JSON.stringify({ type: 'message', id, to: resolved.address, encrypted, signature }))
-  saveMessage({ id, peer: resolved.address, direction: 'outbound', content: message, ts: new Date().toISOString() })
-  return { content: [{ type: 'text', text: `Message sent to ${label}.attn (${resolved.address})` }] }
+  const address = await resolveAttnName(label)
+  if (!address) return null
+  // Delegate to the raw-address path so we reuse its online/offline/cache logic.
+  // displayName lets handleSend render `${label}.attn (${address})` in user-facing text.
+  return handleSend(address, message, `${label}.attn (${address})`)
 }
 
-async function handleSend(to: string, message: string) {
+async function handleSend(to: string, message: string, displayName?: string) {
   if (!to) {
     return { content: [{ type: 'text', text: 'Recipient is required' }], isError: true }
   }
+  const display = displayName ?? to
 
   // 1. Broadcast to all local peers
   if (to === 'all') {
@@ -544,14 +591,11 @@ async function handleSend(to: string, message: string) {
     return { content: [{ type: 'text', text: `Message broadcast to ${sent.length} local session(s): ${sent.join(', ')}` }] }
   }
 
-  // 2. Resolve .attn name to address
+  // 2. Resolve .attn name via the cascade and delegate
   if (to.endsWith('.attn')) {
-    const label = to.slice(0, -5).toLowerCase()
-    if (!label || label.length < 3) {
+    const label = normalizeLabel(to)
+    if (label.length < 3) {
       return { content: [{ type: 'text', text: `Invalid .attn name: "${to}"` }], isError: true }
-    }
-    if (!state.ws || !state.authenticated) {
-      return { content: [{ type: 'text', text: 'Not connected to relay. Cannot resolve .attn name.' }], isError: true }
     }
     const result = await sendToResolvedName(label, message)
     if (result) return result
@@ -598,7 +642,15 @@ async function handleSend(to: string, message: string) {
       }
     }
 
-    const cachedKey = state.keyCache.get(to.toLowerCase())
+    let cachedKey = state.keyCache.get(to.toLowerCase())
+    if (!cachedKey) {
+      // Fall back to the on-disk cache so sends survive plugin restarts.
+      const dbKey = getKeyCache(to.toLowerCase())
+      if (dbKey) {
+        state.keyCache.set(to.toLowerCase(), dbKey)
+        cachedKey = dbKey
+      }
+    }
     if (!cachedKey) {
       return {
         content: [{ type: 'text', text: 'Not connected to relay and recipient key not cached. Cannot queue message.' }],
@@ -615,13 +667,13 @@ async function handleSend(to: string, message: string) {
     saveMessage({ id, peer: to, direction: 'outbound', content: message, ts: new Date().toISOString() })
     addContactAndDeliverPending(to)
 
-    return { content: [{ type: 'text', text: `Message queued (relay offline). Will send on reconnect.` }] }
+    return { content: [{ type: 'text', text: `Message queued for ${display} (relay offline). Will send on reconnect.` }] }
   }
 
   const publicKey = await requestKey(to)
   if (!publicKey) {
     return {
-      content: [{ type: 'text', text: `Could not find public key for ${to}. Agent may have never connected.` }],
+      content: [{ type: 'text', text: `Could not find public key for ${display}. Agent may have never connected.` }],
       isError: true,
     }
   }
@@ -635,7 +687,7 @@ async function handleSend(to: string, message: string) {
   saveMessage({ id, peer: to, direction: 'outbound', content: message, ts: new Date().toISOString() })
   addContactAndDeliverPending(to)
 
-  return { content: [{ type: 'text', text: `Message sent to ${to}` }] }
+  return { content: [{ type: 'text', text: `Message sent to ${display}` }] }
 }
 
 async function handleSendLocal(peerName: string, message: string) {
@@ -821,20 +873,17 @@ async function handleSendFile(to: string, path: string) {
   if (!to) {
     return { content: [{ type: 'text', text: 'Recipient is required' }], isError: true }
   }
-  // Resolve .attn name to address
+  // Resolve .attn name / plain name via the cascade (works offline if pubkey cached)
   if (!isValidAddress(to)) {
-    const label = to.replace(/\.attn$/, '').toLowerCase()
+    const label = normalizeLabel(to)
     if (label.length < 3) {
       return { content: [{ type: 'text', text: `Invalid recipient: "${to}"` }], isError: true }
     }
-    const resolved = await resolveAttnName(label)
-    if (!resolved) {
-      return { content: [{ type: 'text', text: `Name "${label}.attn" not found or not connected to relay.` }], isError: true }
+    const address = await resolveAttnName(label)
+    if (!address) {
+      return { content: [{ type: 'text', text: `Name "${label}.attn" not found. It may not be registered.` }], isError: true }
     }
-    to = resolved.address
-  }
-  if (!state.ws || !state.authenticated) {
-    return { content: [{ type: 'text', text: 'Not connected to relay. Cannot send file.' }], isError: true }
+    to = address
   }
 
   const file = Bun.file(path)
@@ -929,7 +978,7 @@ async function handleLookup(query: string) {
     const [owner] = await publicClient.readContract({
       address: NAMES_ADDRESS, abi: attnNamesAbi, functionName: 'resolve', args: [label],
     }) as [string, string]
-    if (owner === '0x0000000000000000000000000000000000000000') {
+    if (owner === zeroAddress) {
       return { content: [{ type: 'text', text: `"${label}.attn" is not registered.` }] }
     }
     return { content: [{ type: 'text', text: `${label}.attn → ${owner}` }] }

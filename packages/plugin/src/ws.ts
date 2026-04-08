@@ -429,6 +429,11 @@ export function requestKey(address: string): Promise<string | null> {
     return Promise.resolve(dbCached)
   }
 
+  // No cache and no WS — can't fetch over network, fail fast so callers don't hang
+  if (!state.ws || !state.authenticated) {
+    return Promise.resolve(null)
+  }
+
   return new Promise((resolve) => {
     const addr = address.toLowerCase()
     const existing = state.pendingKeyRequests.get(addr) ?? []
@@ -461,6 +466,8 @@ export function requestResolve(name: string): Promise<{ address: string; publicK
     if (existing.length === 1 && state.ws) {
       state.ws.send(JSON.stringify({ type: 'resolve', name: label }))
 
+      // Short timeout — relay round-trip is fast; long waits just delay the
+      // HTTP/on-chain fallback for callers that cascade.
       const timeout = setTimeout(() => {
         resolveTimeouts.delete(label)
         const cbs = state.pendingResolveRequests.get(label)
@@ -468,7 +475,7 @@ export function requestResolve(name: string): Promise<{ address: string; publicK
           state.pendingResolveRequests.delete(label)
           for (const cb of cbs) cb(null)
         }
-      }, 10000)
+      }, 3000)
       resolveTimeouts.set(label, timeout)
     }
   })
