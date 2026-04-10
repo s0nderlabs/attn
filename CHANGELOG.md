@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.7] - 2026-04-10
+
+### Fixed
+
+- Windows: `bun run start` now `cd`s into `packages/plugin/` before launching, so bun resolves `node_modules` from the package directory instead of the repo root — fixes module-not-found crashes on Windows machines without Developer Mode where `--backend=copyfile` places deps in package-local `node_modules/`
+
 ## [0.5.6] - 2026-04-08
 
 ### Fixed
@@ -264,6 +270,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.7]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.7
 [0.5.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.5
 [0.5.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.1
 [0.5.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.0
