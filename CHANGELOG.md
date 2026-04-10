@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.8] - 2026-04-10
+
+### Fixed
+
+- Start script no longer forces `--backend=copyfile` on all platforms — uses default symlink backend first, falls back to copyfile only when symlinks fail (Windows without Developer Mode). Fixes corrupted marketplace cache caused by a bun copyfile bug that randomly produces 0-byte dependency files which `bun install` never self-heals.
+
 ## [0.5.7] - 2026-04-10
 
 ### Fixed
@@ -270,6 +276,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.8]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.8
 [0.5.7]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.7
 [0.5.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.5
 [0.5.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.1
