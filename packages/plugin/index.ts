@@ -6,6 +6,7 @@ import { state } from './src/state.js'
 import { connectMcp, notifyInbound } from './src/server.js'
 import { connectToRelay, cleanup } from './src/ws.js'
 import { checkDuplicateSession, writePeerInfo, startLocalServer, cleanupLocal } from './src/local.js'
+import { startStatusHeartbeat, stopStatusHeartbeat } from './src/status.js'
 import type { LocalMessage } from './src/local.js'
 
 process.on('unhandledRejection', (err) => {
@@ -58,6 +59,9 @@ try {
   process.exit(1)
 }
 writePeerInfo(effectiveName, address)
+
+// Start publishing status file (consumed by statusline scripts, tmux widgets, etc.)
+startStatusHeartbeat()
 
 const localServer = startLocalServer(effectiveName, (msg: LocalMessage) => {
   const id = crypto.randomUUID()
@@ -112,6 +116,7 @@ function shutdown(reason: string) {
   shuttingDown = true
   process.stderr.write(`attn: shutting down (${reason})\n`)
   setTimeout(() => process.exit(0), 3000)
+  try { stopStatusHeartbeat() } catch {}
   try { cleanupLocal(effectiveName) } catch {}
   try { cleanup() } catch {}
   process.exit(0)

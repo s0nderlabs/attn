@@ -23,6 +23,12 @@ export function getInboxDir(): string {
   return dir
 }
 
+export function getStatusDir(): string {
+  const dir = join(getStateDir(), 'status')
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 export function getSessionName(): string | null {
   const session = process.env.ATTN_SESSION
   if (!session || session === 'main') return null

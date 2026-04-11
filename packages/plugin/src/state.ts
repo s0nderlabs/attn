@@ -7,6 +7,7 @@ export const state = {
   keyCache: new Map<string, string>(),
   ws: null as WebSocket | null,
   authenticated: false,
+  lastPongAt: 0,
   address: '',
   account: null as ReturnType<typeof privateKeyToAccount> | null,
   privateKey: '' as `0x${string}`,

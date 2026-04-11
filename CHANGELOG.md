@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.9] - 2026-04-11
+
+### Fixed
+
+- Relay connection could get permanently stuck in a "WebSocket open but not authenticated" state if the handshake stalled (CF Workers DO cold start, lost challenge frame, auth send during brief socket closure). Added a 10s auth-handshake watchdog that force-closes the socket if `auth_ok` never arrives, plus a 90s pong watchdog that detects dead connections instead of waiting for TCP keepalive timeouts (minutes). Previously the only recovery was `/reload-plugins`.
+- `peers` tool reported `Relay: connected` unconditionally for the main session regardless of the actual connection state — `!state.sessionName || state.ws ? 'connected' : 'local-only'` always resolved to `connected` because `!null` is `true`. Now reports the true state (`connected` / `connecting` / `reconnecting` / `n/a`) via a single `isRelayReady()` source of truth shared with `send`, `react`, and all other relay-dependent tools.
+- `auth_error` from relay now force-closes the socket on the client side instead of just logging and waiting for the relay's close frame to propagate. Defends against lost close frames leaving the plugin in a stuck state.
+- Challenge handler's async `signMessage` is now guarded against the socket closing mid-sign — previously became an unhandled rejection with no state cleanup.
+- `state.ws.send()` calls in `send`, `react`, `requestKey`, `requestResolve` now check `readyState === OPEN` before sending and fall back cleanly on failure, instead of throwing `InvalidStateError` from the send path.
+- Empty WebSocket `error` event handler now logs the event so low-level errors have visibility in stderr.
+- Ping keepalive interval now checks pong freshness and socket readyState before sending, forcing reconnect if either check fails.
+- `contacts` tool's HTTP `/status` fetch now has a 3s timeout — previously could hang for many seconds if relay was unreachable.
+
+### Added
+
+- Status file at `~/.claude/channels/attn/status/{session}.json` published on every state transition and on a 60s heartbeat. Enables external consumers (statusline scripts, tmux widgets, menubar apps) to render live relay connection state. Payload includes `relay` enum, `sessionType` (`main` / `local` / `external`), `address`, `session`, `localPeers`, `updatedAt`. File is deleted on clean shutdown; consumers should treat `updatedAt` older than 90s as plugin-dead.
+- `isRelayReady()` helper in new `src/status.ts` — single source of truth for "can I actually talk to the relay right now". Replaces six ad-hoc `state.ws && state.authenticated` checks across the codebase, all of which were missing the `readyState === OPEN` guard.
+
 ## [0.5.8] - 2026-04-10
 
 ### Fixed
@@ -276,6 +294,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.9]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.9
 [0.5.8]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.8
 [0.5.7]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.7
 [0.5.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.5

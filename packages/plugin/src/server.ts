@@ -37,6 +37,7 @@ import {
   getKeyCache,
 } from './history.js'
 import { requestKey, requestResolve } from './ws.js'
+import { isRelayReady, getRelayStatus, getSessionType } from './status.js'
 import { getRelayHttpUrl, getInboxDir } from './env.js'
 import { getLocalPeers, getLocalPeer, sendLocal } from './local.js'
 import type { LocalMessage } from './local.js'
@@ -502,7 +503,7 @@ async function resolveAttnName(label: string): Promise<string | null> {
 
   let address: string | null = null
 
-  if (state.ws && state.authenticated) {
+  if (isRelayReady()) {
     const resolved = await requestResolve(label)
     if (resolved) {
       address = resolved.address
@@ -634,8 +635,8 @@ async function handleSend(to: string, message: string, displayName?: string) {
     return { content: [{ type: 'text', text: 'Invalid Ethereum address' }], isError: true }
   }
 
-  if (!state.ws || !state.authenticated) {
-    if (state.sessionName && !state.ws) {
+  if (!isRelayReady()) {
+    if (getSessionType() === 'local') {
       return {
         content: [{ type: 'text', text: 'This session is local-only (no relay connection). Can only send to local peers. Set ATTN_EXTERNAL=1 for relay access.' }],
         isError: true,
@@ -683,7 +684,16 @@ async function handleSend(to: string, message: string, displayName?: string) {
   const envelope = { id, to: to.toLowerCase(), encrypted }
   const signature = await signEnvelope(state.account!, envelope)
 
-  state.ws.send(JSON.stringify({ type: 'message', id, to: to.toLowerCase(), encrypted, signature }))
+  try {
+    state.ws!.send(JSON.stringify({ type: 'message', id, to: to.toLowerCase(), encrypted, signature }))
+  } catch (err) {
+    process.stderr.write(`attn: send failed mid-flight: ${err instanceof Error ? err.message : err}\n`)
+    // Fall back to outbox — encrypted payload + signature already prepared
+    saveOutbox({ id, to_address: to.toLowerCase(), encrypted, signature, ts: Date.now() })
+    saveMessage({ id, peer: to, direction: 'outbound', content: message, ts: new Date().toISOString() })
+    addContactAndDeliverPending(to)
+    return { content: [{ type: 'text', text: `Message queued for ${display} (send failed mid-flight). Will retry on reconnect.` }] }
+  }
   saveMessage({ id, peer: to, direction: 'outbound', content: message, ts: new Date().toISOString() })
   addContactAndDeliverPending(to)
 
@@ -841,7 +851,7 @@ async function handleReact(emoji: string, messageId?: string) {
     return { content: [{ type: 'text', text: 'Could not determine reaction recipient' }], isError: true }
   }
 
-  if (!state.ws || !state.authenticated) {
+  if (!isRelayReady()) {
     return { content: [{ type: 'text', text: 'Not connected to relay. Cannot send reaction.' }], isError: true }
   }
 
@@ -855,14 +865,19 @@ async function handleReact(emoji: string, messageId?: string) {
   const envelope = { id, to: recipient.toLowerCase(), encrypted }
   const signature = await signEnvelope(state.account!, envelope)
 
-  state.ws.send(JSON.stringify({
-    type: 'reaction',
-    id,
-    to: recipient.toLowerCase(),
-    message_id: resolvedMessageId,
-    encrypted,
-    signature,
-  }))
+  try {
+    state.ws!.send(JSON.stringify({
+      type: 'reaction',
+      id,
+      to: recipient.toLowerCase(),
+      message_id: resolvedMessageId,
+      encrypted,
+      signature,
+    }))
+  } catch (err) {
+    process.stderr.write(`attn: reaction send failed mid-flight: ${err instanceof Error ? err.message : err}\n`)
+    return { content: [{ type: 'text', text: `Failed to send reaction (connection lost). Try again after reconnect.` }], isError: true }
+  }
 
   saveReaction({ message_id: resolvedMessageId, from_address: state.address, emoji, ts: new Date().toISOString() })
 
@@ -968,7 +983,7 @@ async function handleLookup(query: string) {
   // Forward lookup: name → address
   if (!query.startsWith('0x')) {
     const label = query.toLowerCase().replace(/\.attn$/, '')
-    if (state.ws && state.authenticated) {
+    if (isRelayReady()) {
       const resolved = await requestResolve(label)
       if (!resolved) return { content: [{ type: 'text', text: `"${label}.attn" is not registered.` }] }
       return { content: [{ type: 'text', text: `${label}.attn → ${resolved.address}${resolved.publicKey ? ' (connected)' : ' (never connected)'}` }] }
@@ -997,10 +1012,12 @@ async function handleNames(address?: string) {
   const target = (address ?? state.address).toLowerCase()
 
   // Use relay endpoint
-  if (state.ws && state.authenticated) {
+  if (isRelayReady()) {
     try {
       const relayBase = getRelayHttpUrl().replace('/ws', '').replace('wss://', 'https://').replace('ws://', 'http://')
-      const resp = await fetch(`${relayBase}/names?address=${encodeURIComponent(target)}`)
+      const resp = await fetch(`${relayBase}/names?address=${encodeURIComponent(target)}`, {
+        signal: AbortSignal.timeout(3000),
+      })
       if (resp.ok) {
         const result = (await resp.json()) as { names: string[] }
         if (result.names.length === 0) return { content: [{ type: 'text', text: `No .attn names found for ${target}` }] }
@@ -1172,6 +1189,7 @@ async function handleContacts() {
         method: 'POST',
         body: JSON.stringify({ addresses: contactsList.map(c => c.address) }),
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(3000),
       })
       if (resp.ok) statusMap = (await resp.json()) as Record<string, { online: boolean }>
     } catch {}
@@ -1448,7 +1466,7 @@ function handlePeers() {
   const selfName = state.sessionName ?? 'main'
 
   let text = `This session: "${selfName}" (${state.address})\n`
-  text += `Relay: ${!state.sessionName || state.ws ? 'connected' : 'local-only'}\n\n`
+  text += `Relay: ${getRelayStatus()}\n\n`
   text += `Local peers (${peers.length}):\n`
 
   if (peers.length === 0) {

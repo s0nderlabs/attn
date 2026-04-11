@@ -1,6 +1,7 @@
 import type { ServerMessage } from '@attn/shared/messages'
 import { join } from 'path'
 import { state } from './state.js'
+import { writeStatusFile, isRelayReady } from './status.js'
 import { decryptMessage, decryptBinary, verifyEnvelope } from './crypto.js'
 import {
   saveMessage,
@@ -32,8 +33,18 @@ type OnInbound = (
 let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let pingInterval: ReturnType<typeof setInterval> | null = null
+let authHandshakeTimer: ReturnType<typeof setTimeout> | null = null
 const keyTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 const resolveTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
+// Force a reconnect by closing the current socket. The close handler will
+// null state.ws and schedule a reconnect via reconnectTimer. Called from
+// every watchdog (auth handshake timeout, pong timeout, challenge handler
+// error, auth_error).
+function forceReconnect(ws: WebSocket, reason: string): void {
+  process.stderr.write(`attn: forcing reconnect — ${reason}\n`)
+  try { ws.close(4000, reason) } catch {}
+}
 
 // Sync local contact name with relay-provided .attn name (always fresh, on-chain)
 function syncContactName(address: string, relayName?: string): string | null {
@@ -55,37 +66,80 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
 
   const ws = new WebSocket(wsUrl)
   state.ws = ws
+  writeStatusFile()
+
+  // Handshake watchdog — if auth_ok doesn't arrive within 10s, force reconnect.
+  // Covers: slow DO cold start that never completes, relay that accepts the
+  // socket but never sends challenge, lost auth frames.
+  if (authHandshakeTimer) clearTimeout(authHandshakeTimer)
+  authHandshakeTimer = setTimeout(() => {
+    if (state.ws === ws && !state.authenticated) {
+      forceReconnect(ws, 'auth handshake timeout (10s)')
+    }
+  }, 10_000)
 
   ws.addEventListener('open', () => {
     process.stderr.write(`attn: connected\n`)
+    writeStatusFile()
   })
 
   ws.addEventListener('message', async (event) => {
     const raw = event.data as string
-    if (raw === 'pong') return
+    if (raw === 'pong') {
+      state.lastPongAt = Date.now()
+      return
+    }
 
     const msg = JSON.parse(raw) as ServerMessage
 
     switch (msg.type) {
       case 'challenge': {
-        const signature = await state.account!.signMessage({ message: msg.nonce })
-        ws.send(JSON.stringify({ type: 'auth', address: state.address, signature }))
+        try {
+          const signature = await state.account!.signMessage({ message: msg.nonce })
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'auth', address: state.address, signature }))
+          } else {
+            forceReconnect(ws, `socket closed during challenge signing (state ${ws.readyState})`)
+          }
+        } catch (err) {
+          forceReconnect(ws, `challenge handler error: ${err instanceof Error ? err.message : err}`)
+        }
         break
       }
 
       case 'auth_ok':
         state.authenticated = true
+        state.lastPongAt = Date.now()
         reconnectDelay = 1000
         process.stderr.write(`attn: authenticated as ${msg.address}\n`)
+        if (authHandshakeTimer) { clearTimeout(authHandshakeTimer); authHandshakeTimer = null }
+        writeStatusFile()
         if (pingInterval) clearInterval(pingInterval)
         pingInterval = setInterval(() => {
-          try { ws.send('ping') } catch {}
+          // Pong watchdog: if 90s since last pong (3 missed), the socket is
+          // dead even if readyState still says OPEN. Force a reconnect.
+          if (Date.now() - state.lastPongAt > 90_000) {
+            process.stderr.write(
+              `attn: pong watchdog expired — ${Math.floor((Date.now() - state.lastPongAt) / 1000)}s since last pong\n`,
+            )
+            forceReconnect(ws, 'pong watchdog')
+            return
+          }
+          if (ws.readyState !== WebSocket.OPEN) {
+            forceReconnect(ws, `ping on non-open socket (state ${ws.readyState})`)
+            return
+          }
+          try { ws.send('ping') } catch (err) {
+            process.stderr.write(`attn: ping send failed: ${err instanceof Error ? err.message : err}\n`)
+            forceReconnect(ws, 'ping send threw')
+          }
         }, 30_000)
         flushOutbox(ws)
         break
 
       case 'auth_error':
         process.stderr.write(`attn: auth failed: ${msg.error}\n`)
+        forceReconnect(ws, `auth_error: ${msg.error}`)
         break
 
       case 'message': {
@@ -339,7 +393,9 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
     state.authenticated = false
     state.ws = null
     if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
+    if (authHandshakeTimer) { clearTimeout(authHandshakeTimer); authHandshakeTimer = null }
     if (reconnectTimer) clearTimeout(reconnectTimer)
+    writeStatusFile()
     process.stderr.write(`attn: disconnected, reconnecting in ${reconnectDelay}ms\n`)
     reconnectTimer = setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 2, 30000)
@@ -347,7 +403,11 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
     }, reconnectDelay)
   })
 
-  ws.addEventListener('error', () => {})
+  ws.addEventListener('error', () => {
+    // Don't reset state here — close event will fire and handle cleanup.
+    // Just log so we have visibility when WebSocket low-level errors happen.
+    process.stderr.write(`attn: websocket error event\n`)
+  })
 }
 
 async function processFileRef(plaintext: string): Promise<{ displayContent: string; filePath?: string }> {
@@ -430,7 +490,7 @@ export function requestKey(address: string): Promise<string | null> {
   }
 
   // No cache and no WS — can't fetch over network, fail fast so callers don't hang
-  if (!state.ws || !state.authenticated) {
+  if (!isRelayReady()) {
     return Promise.resolve(null)
   }
 
@@ -440,8 +500,15 @@ export function requestKey(address: string): Promise<string | null> {
     existing.push(resolve)
     state.pendingKeyRequests.set(addr, existing)
 
-    if (existing.length === 1 && state.ws) {
-      state.ws.send(JSON.stringify({ type: 'get_key', address: addr }))
+    if (existing.length === 1 && isRelayReady()) {
+      try {
+        state.ws!.send(JSON.stringify({ type: 'get_key', address: addr }))
+      } catch (err) {
+        process.stderr.write(`attn: requestKey send failed: ${err instanceof Error ? err.message : err}\n`)
+        state.pendingKeyRequests.delete(addr)
+        resolve(null)
+        return
+      }
 
       const timeout = setTimeout(() => {
         keyTimeouts.delete(addr)
@@ -463,8 +530,15 @@ export function requestResolve(name: string): Promise<{ address: string; publicK
     existing.push(resolve)
     state.pendingResolveRequests.set(label, existing)
 
-    if (existing.length === 1 && state.ws) {
-      state.ws.send(JSON.stringify({ type: 'resolve', name: label }))
+    if (existing.length === 1 && isRelayReady()) {
+      try {
+        state.ws!.send(JSON.stringify({ type: 'resolve', name: label }))
+      } catch (err) {
+        process.stderr.write(`attn: requestResolve send failed: ${err instanceof Error ? err.message : err}\n`)
+        state.pendingResolveRequests.delete(label)
+        resolve(null)
+        return
+      }
 
       // Short timeout — relay round-trip is fast; long waits just delay the
       // HTTP/on-chain fallback for callers that cascade.
@@ -483,6 +557,7 @@ export function requestResolve(name: string): Promise<{ address: string; publicK
 
 export function cleanup(): void {
   if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
+  if (authHandshakeTimer) { clearTimeout(authHandshakeTimer); authHandshakeTimer = null }
   if (reconnectTimer) clearTimeout(reconnectTimer)
   if (state.ws) {
     try { state.ws.close() } catch {}
