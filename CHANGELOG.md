@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.11] - 2026-04-11
+
+### Fixed
+
+- Status file PID scoping now walks the process tree to find the actual Claude Code binary PID, instead of using `process.ppid` directly. Root cause: Claude Code launches the attn plugin via `bun run --cwd ... start`, which spawns `bun index.ts` as a *child* (not an exec-replace), so `process.ppid` in the plugin returned the `bun run` wrapper PID rather than the claude binary PID. Meanwhile the statusline script runs as a direct child of claude (no `bun run` wrapper), so its `$PPID` is the claude binary — off by one layer from what the plugin was writing. The two sides never saw each other's identifier. Fixed by walking up the `ps` tree (up to 5 levels) on both sides until finding a process whose command ends with `/claude`, falling back to the direct parent if not found. On Windows (no `ps`), falls back to `process.ppid` as before.
+
 ## [0.5.10] - 2026-04-11
 
 ### Fixed
@@ -300,6 +306,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.11]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.11
 [0.5.10]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.10
 [0.5.9]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.9
 [0.5.8]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.8
