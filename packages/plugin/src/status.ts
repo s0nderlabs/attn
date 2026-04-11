@@ -8,6 +8,12 @@ import { getLocalPeers } from './local.js'
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 let shuttingDown = false
 let cachedStatusPath: string | null = null
+// Cache of the last-written payload (sans updatedAt) for change detection.
+// Suppresses redundant writes during long stretches of unchanged state — e.g.
+// the 60s heartbeat ticking while the plugin sits in "reconnecting", or
+// both forceCleanupAndReconnect + close handler firing in sequence for the
+// same ws. Consumers treat the file as state-snapshot, not a timestamp log.
+let lastWrittenPayload: string | null = null
 
 // Walk up the process tree from process.ppid to find the Claude Code binary.
 // Context: Claude Code spawns MCP servers via `.mcp.json`, and the attn
@@ -79,21 +85,36 @@ function getStatusFilePath(): string {
   return cachedStatusPath
 }
 
+// State-transition write: skip if nothing meaningful changed since last write.
+// Prevents double-writes when both forceCleanupAndReconnect and the close
+// handler fire for the same ws.
 export function writeStatusFile(): void {
+  writeStatusFileInternal(false)
+}
+
+// Heartbeat write: always refreshes updatedAt so external consumers can use
+// it as a liveness signal (>90s stale → plugin dead).
+function writeStatusFileLiveness(): void {
+  writeStatusFileInternal(true)
+}
+
+function writeStatusFileInternal(force: boolean): void {
   // During shutdown, suppress writes. Otherwise the `close` event that fires
   // from ws.close() in cleanup() would re-create the status file after we've
   // already unlinked it, leaving a stale "reconnecting" file on disk.
   if (shuttingDown) return
   try {
-    const payload = {
+    const snapshot = JSON.stringify({
       address: state.address,
       session: state.sessionName ?? 'main',
       sessionType: getSessionType(),
       relay: getRelayStatus(),
       localPeers: getLocalPeers().length,
-      updatedAt: Date.now(),
-    }
-    writeFileSync(getStatusFilePath(), JSON.stringify(payload))
+    })
+    if (!force && snapshot === lastWrittenPayload) return
+    lastWrittenPayload = snapshot
+    const payload = snapshot.slice(0, -1) + `,"updatedAt":${Date.now()}}`
+    writeFileSync(getStatusFilePath(), payload)
   } catch (err) {
     process.stderr.write(`attn: status file write failed: ${err instanceof Error ? err.message : err}\n`)
   }
@@ -101,8 +122,8 @@ export function writeStatusFile(): void {
 
 export function startStatusHeartbeat(): void {
   if (heartbeatTimer) clearInterval(heartbeatTimer)
-  writeStatusFile()
-  heartbeatTimer = setInterval(writeStatusFile, 60_000)
+  writeStatusFileLiveness()
+  heartbeatTimer = setInterval(writeStatusFileLiveness, 60_000)
 }
 
 export function stopStatusHeartbeat(): void {

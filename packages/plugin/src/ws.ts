@@ -1,7 +1,7 @@
 import type { ServerMessage } from '@attn/shared/messages'
 import { join } from 'path'
 import { state } from './state.js'
-import { writeStatusFile, isRelayReady } from './status.js'
+import { writeStatusFile, isRelayReady, getSessionType, getRelayStatus } from './status.js'
 import { decryptMessage, decryptBinary, verifyEnvelope } from './crypto.js'
 import {
   saveMessage,
@@ -34,16 +34,71 @@ let reconnectDelay = 1000
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let pingInterval: ReturnType<typeof setInterval> | null = null
 let authHandshakeTimer: ReturnType<typeof setTimeout> | null = null
+let healthWatchdogTimer: ReturnType<typeof setInterval> | null = null
+let lastHealthyAt = Date.now()
+// Captured on the first connectToRelay call so module-level recovery paths
+// (health watchdog, scheduleReconnect, forceCleanupAndReconnect) can re-enter
+// the connect flow without needing them passed in.
+let currentRelayUrl: string | null = null
+let currentOnInbound: OnInbound | null = null
 const keyTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 const resolveTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 
-// Force a reconnect by closing the current socket. The close handler will
-// null state.ws and schedule a reconnect via reconnectTimer. Called from
-// every watchdog (auth handshake timeout, pong timeout, challenge handler
-// error, auth_error).
+// Force a reconnect by closing the current socket. Use for OPEN-state sockets
+// where ws.close() reliably emits a close event (pong watchdog, challenge
+// handler error, auth_error). For CONNECTING sockets, use forceCleanupAndReconnect
+// — Bun does NOT reliably fire close on a CONNECTING socket, so the close
+// handler cascade never runs and the reconnect loop wedges.
 function forceReconnect(ws: WebSocket, reason: string): void {
   process.stderr.write(`attn: forcing reconnect — ${reason}\n`)
   try { ws.close(4000, reason) } catch {}
+}
+
+// Tear down all per-ws state. Called from both the close handler (after an
+// actual close event) and forceCleanupAndReconnect (when we can't wait for
+// one). Must be idempotent — both paths may fire for the same ws.
+function teardownWsState(): void {
+  state.authenticated = false
+  state.ws = null
+  if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
+  if (authHandshakeTimer) { clearTimeout(authHandshakeTimer); authHandshakeTimer = null }
+}
+
+// Aggressive recovery for cases where we can't trust the close event to
+// follow ws.close(). Best-effort closes the current ws, tears down state,
+// writes the status file, schedules the next reconnect.
+function forceCleanupAndReconnect(reason: string): void {
+  process.stderr.write(`attn: force cleanup + reconnect — ${reason}\n`)
+  if (state.ws) {
+    try { state.ws.close() } catch {}
+  }
+  teardownWsState()
+  writeStatusFile()
+  scheduleReconnect()
+}
+
+// Arm the reconnect timer. Idempotent — clears any existing pending timer
+// before scheduling a new one. Wraps the setTimeout callback in try/catch so
+// a synchronous throw inside `new WebSocket(...)` or connectToRelay can never
+// kill the reconnect loop permanently.
+function scheduleReconnect(): void {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+  process.stderr.write(`attn: reconnect scheduled in ${reconnectDelay}ms\n`)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    try {
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000)
+      if (currentRelayUrl && currentOnInbound) {
+        connectToRelay(currentRelayUrl, currentOnInbound)
+      } else {
+        process.stderr.write(`attn: reconnect skipped — no relayUrl captured\n`)
+      }
+    } catch (err) {
+      process.stderr.write(`attn: reconnect attempt threw: ${err instanceof Error ? err.message : err}\n`)
+      // Re-arm on the next backoff interval so a sync throw doesn't end the loop
+      scheduleReconnect()
+    }
+  }, reconnectDelay)
 }
 
 // Sync local contact name with relay-provided .attn name (always fresh, on-chain)
@@ -61,6 +116,10 @@ function formatSize(bytes: number): string {
 }
 
 export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
+  // Capture for module-level recovery paths (health watchdog, scheduleReconnect)
+  currentRelayUrl = relayUrl
+  currentOnInbound = onInbound
+
   const wsUrl = `${relayUrl}?address=${state.address}`
   process.stderr.write(`attn: connecting to ${relayUrl}\n`)
 
@@ -68,13 +127,14 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
   state.ws = ws
   writeStatusFile()
 
-  // Handshake watchdog — if auth_ok doesn't arrive within 10s, force reconnect.
-  // Covers: slow DO cold start that never completes, relay that accepts the
-  // socket but never sends challenge, lost auth frames.
+  // Handshake watchdog — if auth_ok doesn't arrive within 10s, force cleanup
+  // and reconnect. Covers slow DO cold starts, lost challenge/auth frames.
+  // Uses forceCleanupAndReconnect (not forceReconnect) because the ws is
+  // typically still in CONNECTING state here — see forceReconnect() docs.
   if (authHandshakeTimer) clearTimeout(authHandshakeTimer)
   authHandshakeTimer = setTimeout(() => {
     if (state.ws === ws && !state.authenticated) {
-      forceReconnect(ws, 'auth handshake timeout (10s)')
+      forceCleanupAndReconnect(`auth handshake timeout (10s, readyState=${ws.readyState})`)
     }
   }, 10_000)
 
@@ -390,23 +450,24 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
   })
 
   ws.addEventListener('close', () => {
-    state.authenticated = false
-    state.ws = null
-    if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
-    if (authHandshakeTimer) { clearTimeout(authHandshakeTimer); authHandshakeTimer = null }
-    if (reconnectTimer) clearTimeout(reconnectTimer)
+    // Ignore stale close events from an abandoned ws (replaced by a newer one)
+    if (state.ws !== null && state.ws !== ws) {
+      process.stderr.write(`attn: ignoring stale close event from replaced ws\n`)
+      return
+    }
+    teardownWsState()
     writeStatusFile()
-    process.stderr.write(`attn: disconnected, reconnecting in ${reconnectDelay}ms\n`)
-    reconnectTimer = setTimeout(() => {
-      reconnectDelay = Math.min(reconnectDelay * 2, 30000)
-      connectToRelay(relayUrl, onInbound)
-    }, reconnectDelay)
+    process.stderr.write(`attn: disconnected\n`)
+    scheduleReconnect()
   })
 
   ws.addEventListener('error', () => {
-    // Don't reset state here — close event will fire and handle cleanup.
-    // Just log so we have visibility when WebSocket low-level errors happen.
-    process.stderr.write(`attn: websocket error event\n`)
+    process.stderr.write(`attn: websocket error event (readyState=${ws.readyState})\n`)
+    // OPEN-state errors will emit close; CONNECTING/CLOSED won't — recover manually.
+    // See forceReconnect() docs for the Bun close-on-CONNECTING background.
+    if ((ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.CLOSED) && state.ws === ws) {
+      forceCleanupAndReconnect(`error event on ws (readyState=${ws.readyState})`)
+    }
   })
 }
 
@@ -555,10 +616,58 @@ export function requestResolve(name: string): Promise<{ address: string; publicK
   })
 }
 
+// Independent supervisor watchdog. Ticks every 30s regardless of WS state.
+// Tracks the last moment isRelayReady() was true. If we've been unhealthy for
+// more than UNHEALTHY_GRACE_MS AND the session actually uses the relay, force
+// a full cleanup + reconnect — even if no timer is currently armed and no
+// event is expected to fire.
+//
+// This is the safety net that closes the "entire reconnect loop is broken"
+// bug class permanently. Every other watchdog lives *inside* the WS lifecycle
+// (pong watchdog tied to pingInterval, auth handshake watchdog tied to a
+// specific ws) — once the loop breaks upstream of those, nothing can notice.
+// This one runs outside of all that and only cares about the wall-clock
+// readiness of the relay connection.
+const UNHEALTHY_GRACE_MS = 120_000
+const HEALTH_TICK_MS = 30_000
+
+export function startHealthWatchdog(): void {
+  if (healthWatchdogTimer) clearInterval(healthWatchdogTimer)
+  lastHealthyAt = Date.now()
+  healthWatchdogTimer = setInterval(() => {
+    // Local-only derived sessions never touch the relay — nothing to supervise.
+    if (getSessionType() === 'local') return
+
+    if (isRelayReady()) {
+      lastHealthyAt = Date.now()
+      return
+    }
+
+    const unhealthyMs = Date.now() - lastHealthyAt
+    if (unhealthyMs < UNHEALTHY_GRACE_MS) return
+
+    // Stuck for >2 minutes. Assume the reconnect loop is wedged and force
+    // recovery. Reset the delay so the next attempt fires promptly — after
+    // a long stall, aggressive backoff isn't helpful.
+    process.stderr.write(
+      `attn: health watchdog triggering recovery — unhealthy for ${Math.floor(unhealthyMs / 1000)}s, relay=${getRelayStatus()}\n`,
+    )
+    reconnectDelay = 1000
+    forceCleanupAndReconnect(`health watchdog (${Math.floor(unhealthyMs / 1000)}s stuck)`)
+    // Reset grace window so a slow recovery doesn't retrigger us immediately.
+    lastHealthyAt = Date.now()
+  }, HEALTH_TICK_MS)
+}
+
+export function stopHealthWatchdog(): void {
+  if (healthWatchdogTimer) { clearInterval(healthWatchdogTimer); healthWatchdogTimer = null }
+}
+
 export function cleanup(): void {
   if (pingInterval) { clearInterval(pingInterval); pingInterval = null }
   if (authHandshakeTimer) { clearTimeout(authHandshakeTimer); authHandshakeTimer = null }
-  if (reconnectTimer) clearTimeout(reconnectTimer)
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+  stopHealthWatchdog()
   if (state.ws) {
     try { state.ws.close() } catch {}
   }

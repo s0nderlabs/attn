@@ -4,7 +4,7 @@ import { deriveIdentity, deriveSessionKey } from './src/crypto.js'
 import { initDb, expirePending, getAllKeyCache, saveMessage, saveReaction } from './src/history.js'
 import { state } from './src/state.js'
 import { connectMcp, notifyInbound } from './src/server.js'
-import { connectToRelay, cleanup } from './src/ws.js'
+import { connectToRelay, cleanup, startHealthWatchdog } from './src/ws.js'
 import { checkDuplicateSession, writePeerInfo, startLocalServer, cleanupLocal } from './src/local.js'
 import { startStatusHeartbeat, stopStatusHeartbeat } from './src/status.js'
 import type { LocalMessage } from './src/local.js'
@@ -103,6 +103,9 @@ if (!state.sessionName || isExternalEnabled()) {
   connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?, groupId?, groupName?, reactionMessageId?) => {
     notifyInbound(mcp, from, plaintext, id, ts, trust, agentName, groupId, groupName, reactionMessageId)
   })
+  // Independent supervisor: catches stuck reconnect loops that no per-ws
+  // watchdog can see. Safety net for Bun's close-on-CONNECTING edge case.
+  startHealthWatchdog()
 } else {
   process.stderr.write(`attn: local-only (no relay)\n`)
 }

@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.12] - 2026-04-11
+
+### Fixed
+
+- Relay reconnect loop could get permanently wedged in a "reconnecting" state with no actual connection attempts firing, requiring manual `/mcp reconnect` to recover. Root cause: Bun's WebSocket does not reliably emit a `close` event when `ws.close()` is called on a socket still in `CONNECTING` state. Every existing watchdog (pong, auth handshake) relied on the close handler cascade to schedule the next reconnect — once the cascade broke, no code was watching and the loop died silently. Triggered in the wild by heavy network saturation (709-package npm install + 30 MB tarball download) delaying WebSocket ping/pong enough that the pong watchdog force-closed a mid-handshake socket. Forensic story credited to the main session for pinning the exact command and timeline.
+
+### Changed
+
+- `ws.addEventListener('error', ...)` now defensively calls `forceCleanupAndReconnect()` when the socket is in `CONNECTING` or `CLOSED` state, instead of trusting the close event to follow. For `OPEN`-state errors (rare, on an established connection), still delegates to the close handler path.
+- Auth handshake watchdog now calls `forceCleanupAndReconnect()` instead of plain `forceReconnect()`, since the ws is typically in `CONNECTING` state at the 10s timeout point — exactly the Bun edge case where close won't fire.
+- Reconnect timer callback is now wrapped in try/catch. A synchronous throw inside `new WebSocket(...)` or `connectToRelay()` re-arms the next attempt instead of silently ending the loop as an uncaught exception.
+- Reconnect scheduling is now extracted into a single `scheduleReconnect()` helper. Every recovery path (close handler, error handler, auth handshake watchdog, health watchdog) goes through the same entry point — no duplicated inline setTimeout blocks that could drift.
+- Close handler now guards against stale events from an abandoned ws: if `state.ws` has already been replaced by a newer socket, the stale close is ignored instead of clobbering the newer state.
+
+### Added
+
+- Independent health watchdog (supervisor). Module-level `setInterval` ticks every 30s regardless of WebSocket state. Tracks the last moment `isRelayReady()` was true. If the main/external session has been unhealthy for more than 120s, force cleanup + reconnect — even if no per-ws timer is armed and no close event is expected to fire. This is the safety net for the "entire reconnect loop is broken" bug class: once the loop breaks upstream of the per-ws watchdogs, nothing can see it except an external supervisor. Local-only derived sessions short-circuit (they don't use the relay).
+- `forceCleanupAndReconnect(reason)` module-level helper. Nulls `state.ws`, clears per-ws timers, writes status file, and calls `scheduleReconnect()`. Usable from any recovery path that can't trust the close event to follow a `ws.close()` call.
+
 ## [0.5.11] - 2026-04-11
 
 ### Fixed
