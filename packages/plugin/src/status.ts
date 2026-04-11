@@ -38,10 +38,14 @@ export function getRelayStatus(): RelayStatus {
 
 function getStatusFilePath(): string {
   // Cached — status dir is created once in startStatusHeartbeat(), and the
-  // session name can't change after process start, so neither can the path.
+  // ppid can't change after process start, so neither can the path.
   if (cachedStatusPath) return cachedStatusPath
-  const session = state.sessionName ?? 'main'
-  cachedStatusPath = join(getStatusDir(), `${session}.json`)
+  // Scope by parent process PID (Claude Code) so each Claude Code instance
+  // has its own status file. Without this, multiple Claude Code windows that
+  // share the same ATTN_SESSION env var (e.g. globally exported) would all
+  // resolve to the same file path, and a statusline in a window without the
+  // attn plugin loaded would still find a file written by another window.
+  cachedStatusPath = join(getStatusDir(), `${process.ppid}.json`)
   return cachedStatusPath
 }
 

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.10] - 2026-04-11
+
+### Fixed
+
+- Status file is now keyed by parent process PID (`status/{ppid}.json`) instead of session name (`status/{session}.json`). Previously, when `ATTN_SESSION` was exported globally in the user's shell, multiple Claude Code windows would all resolve to the same status file path — and a window without the attn plugin loaded would still find the file written by another window, causing the statusline to render an incorrect "● attn" indicator everywhere. Now each Claude Code instance writes its own PID-scoped file, so the statusline only renders when the *same* Claude Code instance has actually spawned an attn plugin.
+
 ## [0.5.9] - 2026-04-11
 
 ### Fixed
@@ -294,6 +300,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.5.10]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.10
 [0.5.9]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.9
 [0.5.8]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.8
 [0.5.7]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.7
