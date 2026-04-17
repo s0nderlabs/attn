@@ -25,6 +25,7 @@ export function initDb(): Database {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_peer_ts ON messages(peer, ts DESC)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_dir_ts ON messages(direction, ts)`)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS contacts (
@@ -105,6 +106,25 @@ export function initDb(): Database {
       emoji TEXT NOT NULL,
       ts TEXT NOT NULL,
       PRIMARY KEY (message_id, from_address)
+    )
+  `)
+
+  // Mutes: if an older schema (without 'all') already exists, drop it —
+  // safe because the feature hasn't shipped yet and the table only holds
+  // runtime-configurable state.
+  const oldMutes = db
+    .query<{ sql: string | null }, []>(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mutes'`)
+    .get()
+  if (oldMutes?.sql && !oldMutes.sql.includes("'all'")) {
+    db.exec(`DROP TABLE mutes`)
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mutes (
+      target TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('agent', 'group', 'all')),
+      until INTEGER,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (target, kind)
     )
   `)
 
@@ -509,4 +529,99 @@ export function getMessageById(
       `SELECT id, peer, direction, content, ts FROM messages WHERE id = ?`,
     )
     .get(id) ?? null
+}
+
+// --- Mutes ---
+
+export type MuteKind = 'agent' | 'group' | 'all'
+
+const ALL_MUTE_TARGET = '*'
+
+export function addMute(target: string, kind: MuteKind, until: number | null): void {
+  const d = initDb()
+  d.run(
+    `INSERT INTO mutes (target, kind, until, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(target, kind) DO UPDATE SET until = excluded.until, created_at = excluded.created_at`,
+    [target.toLowerCase(), kind, until, Date.now()],
+  )
+}
+
+export function removeMute(target: string, kind: MuteKind): boolean {
+  const d = initDb()
+  const result = d.run(`DELETE FROM mutes WHERE target = ? AND kind = ?`, [target.toLowerCase(), kind])
+  return result.changes > 0
+}
+
+export function isMuted(target: string, kind: MuteKind): boolean {
+  const d = initDb()
+  const row = d
+    .query<{ until: number | null }, [string, string]>(
+      `SELECT until FROM mutes WHERE target = ? AND kind = ?`,
+    )
+    .get(target.toLowerCase(), kind)
+  if (!row) return false
+  if (row.until !== null && row.until <= Date.now()) {
+    d.run(`DELETE FROM mutes WHERE target = ? AND kind = ?`, [target.toLowerCase(), kind])
+    return false
+  }
+  return true
+}
+
+export function getMutes(): Array<{ target: string; kind: MuteKind; until: number | null; created_at: number }> {
+  const d = initDb()
+  const now = Date.now()
+  d.run(`DELETE FROM mutes WHERE until IS NOT NULL AND until <= ?`, [now])
+  return d
+    .query<{ target: string; kind: MuteKind; until: number | null; created_at: number }, []>(
+      `SELECT target, kind, until, created_at FROM mutes ORDER BY created_at DESC`,
+    )
+    .all()
+}
+
+export function getMuteCreatedAt(target: string, kind: MuteKind): number | null {
+  const d = initDb()
+  const row = d
+    .query<{ created_at: number }, [string, string]>(
+      `SELECT created_at FROM mutes WHERE target = ? AND kind = ?`,
+    )
+    .get(target.toLowerCase(), kind)
+  return row?.created_at ?? null
+}
+
+export function countInboundSince(peer: string, sinceMs: number): number {
+  const d = initDb()
+  const sinceIso = new Date(sinceMs).toISOString()
+  const row = d
+    .query<{ count: number }, [string, string]>(
+      `SELECT COUNT(*) as count FROM messages WHERE peer = ? AND direction = 'inbound' AND ts >= ?`,
+    )
+    .get(peer.toLowerCase(), sinceIso)
+  return row?.count ?? 0
+}
+
+export function countAllInboundSince(sinceMs: number): number {
+  const d = initDb()
+  const sinceIso = new Date(sinceMs).toISOString()
+  const row = d
+    .query<{ count: number }, [string]>(
+      `SELECT COUNT(*) as count FROM messages WHERE direction = 'inbound' AND ts >= ?`,
+    )
+    .get(sinceIso)
+  return row?.count ?? 0
+}
+
+export function isAllMuted(): boolean {
+  return isMuted(ALL_MUTE_TARGET, 'all')
+}
+
+export function addMuteAll(until: number | null): void {
+  addMute(ALL_MUTE_TARGET, 'all', until)
+}
+
+export function removeMuteAll(): boolean {
+  return removeMute(ALL_MUTE_TARGET, 'all')
+}
+
+export function getMuteAllCreatedAt(): number | null {
+  return getMuteCreatedAt(ALL_MUTE_TARGET, 'all')
 }

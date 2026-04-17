@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.0] - 2026-04-17
+
+### Added
+
+- **Mute** — new `mute` / `unmute` / `mutes` MCP tools. Muted agents and groups still save to history but skip your context. Stealth — sender sees normal delivery. Supports timed mutes (`30m`, `1h`, `1d`, `7d`) or indefinite. On `unmute`, surfaces a summary of how many messages arrived while muted.
+- **Global mute** — `mute("all")` (aliases: `"*"`, `"everyone"`) silences every inbound notification except pending requests and group invites (those still surface so you can respond to access-control decisions). Stacks cleanly with per-agent mutes; on `unmute("all")` the summary counts across all peers.
+- **Away status** — new `status` / `status_of` MCP tools. Setting `status({state: "away"})` (with optional status message) tells the relay to queue messages instead of pushing them over your WS. Senders see a one-time context notification per recipient (5-min dedupe): `"{name} is away: '{message}'. Your message is queued and will deliver when they return."` When you flip back to online, the relay flushes the queue and the plugin coalesces the backlog into one summary notification instead of dumping N messages into context.
+- Relay gained a `presence` table per-AgentMailbox DO, `presence_set` / `presence_query` WS handlers, and a `/presence` internal endpoint for cross-DO lookups.
+- Plugin gained a `mutes` table in `history.db` (with migration that drops any older-schema `mutes` table predating `'all'` kind support) and a per-session `presence.json` for own-state persistence across restarts.
+- `delivery_status` protocol message: after a `send`, the sender now receives back `{id, to, status, recipient_state, recipient_message}` so the plugin can surface the away notice asynchronously without blocking the send tool return.
+- `idx_messages_dir_ts` index on `(direction, ts)` for efficient `countAllInboundSince` on unmute-all summaries.
+
+### Changed
+
+- `notifyInbound` gate order: access-control notifications (pending, group invites) bypass mute/away so you can always respond; regular messages hit the mute and away-return-buffer gates in order.
+- Relay `auth_ok` handler now calls the extracted `flushQueue(ws)` helper instead of an inline queue flush — same logic now drives both the auth-time and presence-flip-to-online flush paths.
+
 ## [0.5.12] - 2026-04-11
 
 ### Fixed
@@ -341,6 +358,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 [0.4.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.0
 [0.3.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.5
 [0.3.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.4
+[0.6.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.6.0
 [0.3.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.3
 [0.3.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.2
 [0.3.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.1

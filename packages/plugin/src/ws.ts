@@ -22,7 +22,8 @@ import {
   saveReaction,
   updateContactName,
 } from './history.js'
-import { getInboxDir } from './env.js'
+import { getInboxDir, loadPresence, savePresence } from './env.js'
+import type { PresenceState } from './state.js'
 
 type OnInbound = (
   from: string, plaintext: string, id: string, ts: number,
@@ -43,6 +44,22 @@ let currentRelayUrl: string | null = null
 let currentOnInbound: OnInbound | null = null
 const keyTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 const resolveTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+const presenceTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+
+const AWAY_SUMMARY_WINDOW_MS = 3_000
+const AWAY_NOTICE_DEDUPE_MS = 5 * 60_000
+const PRESENCE_QUERY_TIMEOUT_MS = 5_000
+const AWAY_NOTICES_CAP = 500
+
+let awayNotifier: ((to: string, message: string | null) => void) | null = null
+export function setAwayNotifier(fn: (to: string, message: string | null) => void): void {
+  awayNotifier = fn
+}
+
+let awaySummaryNotifier: ((count: number) => void) | null = null
+export function setAwaySummaryNotifier(fn: (count: number) => void): void {
+  awaySummaryNotifier = fn
+}
 
 // Force a reconnect by closing the current socket. Use for OPEN-state sockets
 // where ws.close() reliably emits a close event (pong watchdog, challenge
@@ -195,6 +212,24 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
           }
         }, 30_000)
         flushOutbox(ws)
+        // Re-assert persisted presence after auth. Relay state resets per-DO
+        // on cold start, so we always resync on connect.
+        try {
+          const persisted = loadPresence()
+          if (persisted) {
+            state.presence = persisted.state
+            state.presenceMessage = persisted.message
+          }
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'presence_set',
+              state: state.presence,
+              message: state.presenceMessage,
+            }))
+          }
+        } catch (err) {
+          process.stderr.write(`attn: presence re-assert failed: ${err instanceof Error ? err.message : err}\n`)
+        }
         break
 
       case 'auth_error':
@@ -443,6 +478,38 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
       case 'delivered':
         break
 
+      case 'presence_response': {
+        const pr = msg as Extract<typeof msg, { type: 'presence_response' }>
+        const addr = pr.address.toLowerCase()
+        const timeout = presenceTimeouts.get(addr)
+        if (timeout) { clearTimeout(timeout); presenceTimeouts.delete(addr) }
+        const callbacks = state.pendingPresenceRequests.get(addr)
+        if (callbacks) {
+          state.pendingPresenceRequests.delete(addr)
+          for (const cb of callbacks) cb({ state: pr.state, message: pr.message })
+        }
+        break
+      }
+
+      case 'delivery_status': {
+        const ds = msg as Extract<typeof msg, { type: 'delivery_status' }>
+        if (ds.recipient_state === 'away' && awayNotifier) {
+          const to = ds.to.toLowerCase()
+          const now = Date.now()
+          const last = state.awayNoticesLastAt.get(to) ?? 0
+          if (now - last > AWAY_NOTICE_DEDUPE_MS) {
+            if (state.awayNoticesLastAt.size >= AWAY_NOTICES_CAP) {
+              for (const [k, v] of state.awayNoticesLastAt) {
+                if (now - v > AWAY_NOTICE_DEDUPE_MS) state.awayNoticesLastAt.delete(k)
+              }
+            }
+            state.awayNoticesLastAt.set(to, now)
+            try { awayNotifier(to, ds.recipient_message ?? null) } catch {}
+          }
+        }
+        break
+      }
+
       case 'error':
         process.stderr.write(`attn: relay error: ${msg.error}\n`)
         break
@@ -661,6 +728,67 @@ export function startHealthWatchdog(): void {
 
 export function stopHealthWatchdog(): void {
   if (healthWatchdogTimer) { clearInterval(healthWatchdogTimer); healthWatchdogTimer = null }
+}
+
+export function requestPresence(address: string): Promise<{ state: PresenceState; message: string | null } | null> {
+  if (!isRelayReady()) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const addr = address.toLowerCase()
+    const existing = state.pendingPresenceRequests.get(addr) ?? []
+    existing.push(resolve)
+    state.pendingPresenceRequests.set(addr, existing)
+
+    if (existing.length === 1) {
+      try {
+        state.ws!.send(JSON.stringify({ type: 'presence_query', address: addr }))
+      } catch (err) {
+        process.stderr.write(`attn: requestPresence send failed: ${err instanceof Error ? err.message : err}\n`)
+        state.pendingPresenceRequests.delete(addr)
+        resolve(null)
+        return
+      }
+      const timeout = setTimeout(() => {
+        presenceTimeouts.delete(addr)
+        const cbs = state.pendingPresenceRequests.get(addr)
+        if (cbs) {
+          state.pendingPresenceRequests.delete(addr)
+          for (const cb of cbs) cb(null)
+        }
+      }, PRESENCE_QUERY_TIMEOUT_MS)
+      presenceTimeouts.set(addr, timeout)
+    }
+  })
+}
+
+export function setPresence(newState: PresenceState, message: string | null): void {
+  const prev = state.presence
+  state.presence = newState
+  state.presenceMessage = message
+
+  if (prev === 'away' && newState === 'online') {
+    state.returningFromAwayAt = Date.now()
+    state.awaySummaryBuffer = 0
+    if (state.awaySummaryTimer) clearTimeout(state.awaySummaryTimer)
+    state.awaySummaryTimer = setTimeout(() => {
+      const count = state.awaySummaryBuffer
+      state.awaySummaryBuffer = 0
+      state.returningFromAwayAt = null
+      state.awaySummaryTimer = null
+      if (count > 0 && awaySummaryNotifier) {
+        try { awaySummaryNotifier(count) } catch {}
+      }
+    }, AWAY_SUMMARY_WINDOW_MS)
+  }
+
+  savePresence(newState, message)
+
+  if (isRelayReady()) {
+    try {
+      state.ws!.send(JSON.stringify({ type: 'presence_set', state: newState, message }))
+    } catch (err) {
+      process.stderr.write(`attn: setPresence send failed: ${err instanceof Error ? err.message : err}\n`)
+    }
+  }
 }
 
 export function cleanup(): void {

@@ -35,8 +35,21 @@ import {
   getReactionsForMessages,
   getMessageById,
   getKeyCache,
+  addMute,
+  removeMute,
+  isMuted,
+  getMutes,
+  getMuteCreatedAt,
+  countInboundSince,
+  isAllMuted,
+  addMuteAll,
+  removeMuteAll,
+  getMuteAllCreatedAt,
+  countAllInboundSince,
 } from './history.js'
-import { requestKey, requestResolve } from './ws.js'
+import type { MuteKind } from './history.js'
+import { requestKey, requestResolve, requestPresence, setPresence, setAwayNotifier, setAwaySummaryNotifier } from './ws.js'
+import type { PresenceState } from './state.js'
 import { isRelayReady, getRelayStatus, getSessionType } from './status.js'
 import { getRelayHttpUrl, getInboxDir } from './env.js'
 import { getLocalPeers, getLocalPeer, sendLocal } from './local.js'
@@ -408,6 +421,61 @@ export function createServer(identityLine?: string) {
           required: ['label'],
         },
       },
+      {
+        name: 'mute',
+        description: 'Mute inbound notifications. Messages still save to history but skip your context. Stealth — sender sees normal delivery. Target can be an agent, a group, or "all" for global mute.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            target: { type: 'string', description: 'Agent address (0x...), .attn name, group ID, or "all" (also accepts "*" or "everyone") to mute everything' },
+            duration: { type: 'string', description: 'Optional: e.g. "30m", "1h", "1d", "7d". Omit for indefinite.' },
+          },
+          required: ['target'],
+        },
+      },
+      {
+        name: 'unmute',
+        description: 'Unmute an agent, group, or the global mute. Surfaces a summary of how many messages arrived while muted.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            target: { type: 'string', description: 'Agent address (0x...), .attn name, group ID, or "all" to remove global mute' },
+          },
+          required: ['target'],
+        },
+      },
+      {
+        name: 'mutes',
+        description: 'List active mutes (agents and groups), including time remaining on timed mutes.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {},
+          required: [],
+        },
+      },
+      {
+        name: 'status',
+        description: 'Set your availability. "online" means messages deliver immediately. "away" queues messages and shows senders that you are away.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            state: { type: 'string', enum: ['online', 'away'], description: 'Your availability state' },
+            message: { type: 'string', description: 'Optional status message shown to senders (e.g. "auditing contract")' },
+          },
+          required: ['state'],
+        },
+      },
+      {
+        name: 'status_of',
+        description: 'Query another agent\'s availability status (online/away) and status message.',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {
+            target: { type: 'string', description: 'Agent address (0x...) or .attn name' },
+          },
+          required: ['target'],
+        },
+      },
     ],
   }))
 
@@ -464,6 +532,16 @@ export function createServer(identityLine?: string) {
           return await handleTransferName((args.label ?? args.name) as string, args.to as string)
         case 'set_primary_name':
           return await handleSetPrimaryName((args.label ?? args.name) as string)
+        case 'mute':
+          return await handleMute(args.target as string, args.duration as string | undefined)
+        case 'unmute':
+          return await handleUnmute(args.target as string)
+        case 'mutes':
+          return handleMutes()
+        case 'status':
+          return await handleStatus(args.state as string, args.message as string | undefined)
+        case 'status_of':
+          return await handleStatusOf(args.target as string)
         default:
           return { content: [{ type: 'text', text: `Unknown tool: ${req.params.name}` }], isError: true }
       }
@@ -1090,6 +1168,180 @@ async function handleSetPrimaryName(label: string) {
   }
 }
 
+function parseDuration(input: string | undefined): number | null {
+  if (!input) return null
+  const m = input.trim().match(/^(\d+)\s*(m|h|d|w)$/i)
+  if (!m) return null
+  const n = parseInt(m[1], 10)
+  const mult: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 }
+  return n * mult[m[2].toLowerCase()]
+}
+
+function formatDurationRemaining(ms: number): string {
+  if (ms < 60_000) return `${Math.ceil(ms / 1000)}s`
+  if (ms < 3_600_000) return `${Math.ceil(ms / 60_000)}m`
+  if (ms < 86_400_000) return `${Math.ceil(ms / 3_600_000)}h`
+  return `${Math.ceil(ms / 86_400_000)}d`
+}
+
+async function resolveMuteTarget(input: string): Promise<{ target: string; kind: MuteKind; label: string } | null> {
+  if (!input) return null
+  const trimmed = input.trim()
+
+  if (isValidAddress(trimmed)) {
+    return { target: trimmed.toLowerCase(), kind: 'agent', label: trimmed.toLowerCase() }
+  }
+
+  // Group id — current groups DB membership is authoritative
+  const groups = getGroups()
+  const group = groups.find(g => g.id === trimmed)
+  if (group) return { target: group.id, kind: 'group', label: `${group.name} (${group.id})` }
+
+  // Local session name — muting a local peer maps to their address
+  const peer = getLocalPeer(trimmed)
+  if (peer) return { target: peer.address.toLowerCase(), kind: 'agent', label: `${trimmed} (local)` }
+
+  // .attn name resolution (cascades WS → HTTP → on-chain → contacts DB)
+  const addr = await resolveAttnName(trimmed)
+  if (addr) return { target: addr, kind: 'agent', label: `${normalizeLabel(trimmed)}.attn (${addr})` }
+
+  return null
+}
+
+function isGlobalMuteTarget(input: string): boolean {
+  const t = input.trim().toLowerCase()
+  return t === 'all' || t === '*' || t === 'everyone'
+}
+
+async function handleMute(target: string, duration?: string) {
+  if (!target) {
+    return { content: [{ type: 'text', text: 'target is required' }], isError: true }
+  }
+  let untilMs: number | null = null
+  if (duration) {
+    const parsed = parseDuration(duration)
+    if (!parsed) {
+      return { content: [{ type: 'text', text: `Invalid duration "${duration}" — use format like "30m", "1h", "1d", "7d"` }], isError: true }
+    }
+    untilMs = Date.now() + parsed
+  }
+
+  // Global "mute everything" — separate primitive from per-target mute
+  if (isGlobalMuteTarget(target)) {
+    addMuteAll(untilMs)
+    const durText = untilMs ? ` for ${formatDurationRemaining(untilMs - Date.now())}` : ' indefinitely'
+    return {
+      content: [{
+        type: 'text',
+        text: `Muted all inbound${durText}. Every message still saves to history but skips your context. Senders see normal delivery. Pending requests and group invites still surface so you can respond to access-control decisions.`,
+      }],
+    }
+  }
+
+  const resolved = await resolveMuteTarget(target)
+  if (!resolved) {
+    return { content: [{ type: 'text', text: `Could not resolve "${target}" — expected address, .attn name, group ID, or "all"` }], isError: true }
+  }
+  addMute(resolved.target, resolved.kind, untilMs)
+  const durText = untilMs ? ` for ${formatDurationRemaining(untilMs - Date.now())}` : ' indefinitely'
+  return {
+    content: [{
+      type: 'text',
+      text: `Muted ${resolved.kind} ${resolved.label}${durText}. Messages will save to history but skip your context. Sender sees normal delivery.`,
+    }],
+  }
+}
+
+async function handleUnmute(target: string) {
+  if (!target) {
+    return { content: [{ type: 'text', text: 'target is required' }], isError: true }
+  }
+
+  if (isGlobalMuteTarget(target)) {
+    const mutedSince = getMuteAllCreatedAt()
+    if (mutedSince === null) {
+      return { content: [{ type: 'text', text: 'Global mute was not active' }] }
+    }
+    const count = countAllInboundSince(mutedSince)
+    removeMuteAll()
+    const summary = count > 0
+      ? ` — ${count} message${count === 1 ? '' : 's'} arrived across all peers while muted (use history to read)`
+      : ''
+    return { content: [{ type: 'text', text: `Unmuted all${summary}` }] }
+  }
+
+  const resolved = await resolveMuteTarget(target)
+  if (!resolved) {
+    return { content: [{ type: 'text', text: `Could not resolve "${target}"` }], isError: true }
+  }
+  const mutedSince = getMuteCreatedAt(resolved.target, resolved.kind)
+  if (mutedSince === null) {
+    return { content: [{ type: 'text', text: `${resolved.label} was not muted` }] }
+  }
+  const count = countInboundSince(resolved.target, mutedSince)
+  const removed = removeMute(resolved.target, resolved.kind)
+  if (!removed) {
+    return { content: [{ type: 'text', text: `${resolved.label} was not muted` }] }
+  }
+  const summary = count > 0
+    ? ` — ${count} message${count === 1 ? '' : 's'} arrived while muted (use history to read)`
+    : ''
+  return { content: [{ type: 'text', text: `Unmuted ${resolved.label}${summary}` }] }
+}
+
+function handleMutes() {
+  const mutes = getMutes()
+  if (mutes.length === 0) {
+    return { content: [{ type: 'text', text: 'No active mutes' }] }
+  }
+  const now = Date.now()
+  const lines = mutes.map((m) => {
+    const remaining = m.until === null ? 'indefinite' : formatDurationRemaining(m.until - now)
+    if (m.kind === 'all') return `- all: global mute — ${remaining}`
+    const name = m.kind === 'agent' ? (getContactName(m.target) ?? m.target) : (getGroupName(m.target) ?? m.target)
+    return `- ${m.kind}: ${name}${name !== m.target ? ` (${m.target})` : ''} — ${remaining}`
+  })
+  return { content: [{ type: 'text', text: `Active mutes (${mutes.length}):\n${lines.join('\n')}` }] }
+}
+
+async function handleStatus(newState: string, message?: string) {
+  if (newState !== 'online' && newState !== 'away') {
+    return { content: [{ type: 'text', text: 'state must be "online" or "away"' }], isError: true }
+  }
+  const typed = newState as PresenceState
+  const msgClean = message?.trim() || null
+  setPresence(typed, msgClean)
+  const suffix = typed === 'away'
+    ? msgClean
+      ? `. Senders will see: "away: ${msgClean}". Messages queue at relay until you return.`
+      : `. Senders will see you as away. Messages queue at relay until you return.`
+    : '. Messages deliver immediately.'
+  return { content: [{ type: 'text', text: `Status set to ${typed}${suffix}` }] }
+}
+
+async function handleStatusOf(target: string) {
+  if (!target) {
+    return { content: [{ type: 'text', text: 'target is required' }], isError: true }
+  }
+  let address: string | null = null
+  let label = target
+  if (isValidAddress(target)) {
+    address = target.toLowerCase()
+  } else {
+    address = await resolveAttnName(target)
+    if (address) label = `${normalizeLabel(target)}.attn (${address})`
+  }
+  if (!address) {
+    return { content: [{ type: 'text', text: `Could not resolve "${target}"` }], isError: true }
+  }
+  const result = await requestPresence(address)
+  if (!result) {
+    return { content: [{ type: 'text', text: `${label}: unknown (no response from relay)` }] }
+  }
+  const msg = result.message ? `: "${result.message}"` : ''
+  return { content: [{ type: 'text', text: `${label} is ${result.state}${msg}` }] }
+}
+
 function handleHistory(peer: string, limit: number) {
   const messages = getHistory(peer, limit)
   if (messages.length === 0) {
@@ -1514,6 +1766,45 @@ export async function connectMcp() {
   const transport = new StdioServerTransport()
   const mcp = createServer(identityLine)
   await mcp.connect(transport)
+
+  // Hook ws.ts notifier callbacks so away-status UX can emit context notifications
+  // without ws.ts importing MCP transport.
+  setAwayNotifier((to: string, awayMessage: string | null) => {
+    const name = getContactName(to) ?? to
+    const suffix = awayMessage ? `: "${awayMessage}"` : ''
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `${name} is away${suffix}. Your message is queued and will deliver when they return.`,
+        meta: {
+          agent_id: to,
+          user: name,
+          ts: new Date().toISOString(),
+          trust: 'system',
+        },
+      },
+    }).catch((err) => {
+      process.stderr.write(`attn: failed to deliver away notice: ${err}\n`)
+    })
+  })
+
+  setAwaySummaryNotifier((count: number) => {
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content: `${count} message${count === 1 ? '' : 's'} delivered while you were away — use history to read them.`,
+        meta: {
+          agent_id: state.address,
+          user: 'attn',
+          ts: new Date().toISOString(),
+          trust: 'system',
+        },
+      },
+    }).catch((err) => {
+      process.stderr.write(`attn: failed to deliver away-return summary: ${err}\n`)
+    })
+  })
+
   return mcp
 }
 
@@ -1529,6 +1820,18 @@ export function notifyInbound(
   groupName?: string,
   reactionMessageId?: string,
 ) {
+  // Pending and group-invite bypass mute/away gates so the user can still act
+  // on access-control decisions even while silenced.
+  const isAccessControl = trust === 'pending' || trust === 'group_invite'
+  if (!isAccessControl && isAllMuted()) return
+  if (groupId && isMuted(groupId, 'group')) return
+  if (isMuted(from, 'agent')) return
+
+  if (!isAccessControl && state.returningFromAwayAt !== null) {
+    state.awaySummaryBuffer += 1
+    return
+  }
+
   // Only update lastInbound state for real messages (not reactions, pending, or system messages)
   if (trust !== 'reaction' && trust !== 'pending' && trust !== 'group_invite') {
     state.lastInboundFrom = from

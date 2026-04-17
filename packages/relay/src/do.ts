@@ -42,7 +42,78 @@ export class AgentMailbox extends DurableObject<Env> {
       try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN group_id TEXT`) } catch {}
       try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN group_name TEXT`) } catch {}
       try { this.ctx.storage.sql.exec(`ALTER TABLE queue ADD COLUMN reaction_message_id TEXT`) } catch {}
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS presence (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          state TEXT NOT NULL DEFAULT 'online',
+          message TEXT,
+          updated_at INTEGER NOT NULL
+        )
+      `)
     })
+  }
+
+  private getPresence(): { state: 'online' | 'away'; message: string | null } {
+    const rows = [
+      ...this.ctx.storage.sql.exec<{ state: string; message: string | null }>(
+        `SELECT state, message FROM presence WHERE id = 1`,
+      ),
+    ]
+    if (rows.length === 0) return { state: 'online', message: null }
+    const s = rows[0].state === 'away' ? 'away' : 'online'
+    return { state: s, message: rows[0].message }
+  }
+
+  private setPresence(state: 'online' | 'away', message: string | null): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO presence (id, state, message, updated_at) VALUES (1, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET state = excluded.state, message = excluded.message, updated_at = excluded.updated_at`,
+      state,
+      message,
+      Date.now(),
+    )
+  }
+
+  private async flushQueue(ws: WebSocket): Promise<void> {
+    const queued = [
+      ...this.ctx.storage.sql.exec<{
+        id: string; from_address: string; encrypted: string; signature: string; ts: number
+        group_id: string | null; group_name: string | null; reaction_message_id: string | null
+      }>(`SELECT id, from_address, encrypted, signature, ts, group_id, group_name, reaction_message_id FROM queue WHERE delivered = 0 ORDER BY ts ASC LIMIT 100`),
+    ]
+    if (queued.length === 0) return
+    const senderAddrs = [...new Set(queued.map(r => r.from_address.toLowerCase()))]
+    const senderNames = new Map<string, string>()
+    await Promise.allSettled(senderAddrs.map(async (addr) => {
+      const name = await this.resolvePrimaryName(addr)
+      if (name) senderNames.set(addr, name)
+    }))
+    const deliveredIds: string[] = []
+    for (const row of queued) {
+      try {
+        const isReaction = !!row.reaction_message_id
+        const qFromName = senderNames.get(row.from_address.toLowerCase())
+        ws.send(JSON.stringify({
+          type: isReaction ? 'reaction' : 'message',
+          id: row.id,
+          from: row.from_address,
+          ...(qFromName ? { from_name: qFromName } : {}),
+          ...(isReaction ? { message_id: row.reaction_message_id } : {}),
+          encrypted: row.encrypted,
+          signature: row.signature,
+          ts: row.ts,
+          ...(row.group_id ? { group_id: row.group_id, group_name: row.group_name } : {}),
+        }))
+        deliveredIds.push(row.id)
+      } catch { break }
+    }
+    if (deliveredIds.length > 0) {
+      const placeholders = deliveredIds.map(() => '?').join(',')
+      this.ctx.storage.sql.exec(
+        `UPDATE queue SET delivered = 1 WHERE id IN (${placeholders})`,
+        ...deliveredIds,
+      )
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -82,6 +153,18 @@ export class AgentMailbox extends DurableObject<Env> {
         msg.reaction_message_id ?? null,
       )
 
+      const presence = this.getPresence()
+
+      // Recipient is away → keep queued, do NOT push over WS. Sender sees
+      // {status:'queued', recipient_state:'away'} so they can surface a notice.
+      if (presence.state === 'away') {
+        return Response.json({
+          status: 'queued',
+          recipient_state: 'away',
+          recipient_message: presence.message,
+        })
+      }
+
       const fromName = await this.resolvePrimaryName(msg.from)
 
       const sockets = this.ctx.getWebSockets()
@@ -114,7 +197,20 @@ export class AgentMailbox extends DurableObject<Env> {
         this.ctx.storage.sql.exec(`UPDATE queue SET delivered = 1 WHERE id = ?`, msg.id)
       }
 
-      return Response.json({ status: delivered ? 'delivered' : 'queued' })
+      return Response.json({
+        status: delivered ? 'delivered' : 'queued',
+        recipient_state: 'online',
+        recipient_message: presence.message,
+      })
+    }
+
+    // Internal: get this agent's presence (called from other DOs for presence_query)
+    if (request.method === 'GET' && url.pathname === '/presence') {
+      if (url.hostname !== 'internal') {
+        return Response.json({ error: 'Forbidden' }, { status: 403 })
+      }
+      const presence = this.getPresence()
+      return Response.json(presence)
     }
 
     // Internal: get this agent's public key
@@ -212,59 +308,7 @@ export class AgentMailbox extends DurableObject<Env> {
       } satisfies WsAttachment)
 
       ws.send(JSON.stringify({ type: 'auth_ok', address: address.toLowerCase() }))
-
-      // Flush queued messages
-      const queued = [
-        ...this.ctx.storage.sql.exec<{
-          id: string
-          from_address: string
-          encrypted: string
-          signature: string
-          ts: number
-          group_id: string | null
-          group_name: string | null
-          reaction_message_id: string | null
-        }>(`SELECT id, from_address, encrypted, signature, ts, group_id, group_name, reaction_message_id FROM queue WHERE delivered = 0 ORDER BY ts ASC LIMIT 100`),
-      ]
-
-      // Batch-resolve sender names for queued messages (parallel)
-      const senderAddrs = [...new Set(queued.map(r => r.from_address.toLowerCase()))]
-      const senderNames = new Map<string, string>()
-      await Promise.allSettled(senderAddrs.map(async (addr) => {
-        const name = await this.resolvePrimaryName(addr)
-        if (name) senderNames.set(addr, name)
-      }))
-
-      const deliveredIds: string[] = []
-      for (const row of queued) {
-        try {
-          const isReaction = !!row.reaction_message_id
-          const qFromName = senderNames.get(row.from_address.toLowerCase())
-          ws.send(
-            JSON.stringify({
-              type: isReaction ? 'reaction' : 'message',
-              id: row.id,
-              from: row.from_address,
-              ...(qFromName ? { from_name: qFromName } : {}),
-              ...(isReaction ? { message_id: row.reaction_message_id } : {}),
-              encrypted: row.encrypted,
-              signature: row.signature,
-              ts: row.ts,
-              ...(row.group_id ? { group_id: row.group_id, group_name: row.group_name } : {}),
-            }),
-          )
-          deliveredIds.push(row.id)
-        } catch {
-          break
-        }
-      }
-      if (deliveredIds.length > 0) {
-        const placeholders = deliveredIds.map(() => '?').join(',')
-        this.ctx.storage.sql.exec(
-          `UPDATE queue SET delivered = 1 WHERE id IN (${placeholders})`,
-          ...deliveredIds,
-        )
-      }
+      await this.flushQueue(ws)
       return
     }
 
@@ -310,10 +354,22 @@ export class AgentMailbox extends DurableObject<Env> {
             }),
           )
 
-          const result = (await resp.json()) as { status: string }
+          const result = (await resp.json()) as {
+            status: string
+            recipient_state?: 'online' | 'away'
+            recipient_message?: string | null
+          }
           if (result.status === 'delivered') {
             ws.send(JSON.stringify({ type: 'delivered', id }))
           }
+          ws.send(JSON.stringify({
+            type: 'delivery_status',
+            id,
+            to: to.toLowerCase(),
+            status: result.status === 'delivered' ? 'delivered' : 'queued',
+            recipient_state: result.recipient_state,
+            recipient_message: result.recipient_message ?? null,
+          }))
         } catch (err) {
           ws.send(
             JSON.stringify({
@@ -374,10 +430,22 @@ export class AgentMailbox extends DurableObject<Env> {
             }),
           )
 
-          const result = (await resp.json()) as { status: string }
+          const result = (await resp.json()) as {
+            status: string
+            recipient_state?: 'online' | 'away'
+            recipient_message?: string | null
+          }
           if (result.status === 'delivered') {
             ws.send(JSON.stringify({ type: 'delivered', id }))
           }
+          ws.send(JSON.stringify({
+            type: 'delivery_status',
+            id,
+            to: to.toLowerCase(),
+            status: result.status === 'delivered' ? 'delivered' : 'queued',
+            recipient_state: result.recipient_state,
+            recipient_message: result.recipient_message ?? null,
+          }))
         } catch (err) {
           ws.send(
             JSON.stringify({
@@ -385,6 +453,47 @@ export class AgentMailbox extends DurableObject<Env> {
               error: `Failed to route reaction: ${err instanceof Error ? err.message : 'unknown'}`,
             }),
           )
+        }
+        break
+      }
+
+      case 'presence_set': {
+        const newState = msg.state === 'away' ? 'away' : 'online'
+        const rawMsg = msg.message as string | null | undefined
+        const message = typeof rawMsg === 'string' ? rawMsg.slice(0, 200) : null
+        const prev = this.getPresence()
+        this.setPresence(newState, message)
+        // Flip to online → flush any queue that piled up while away.
+        if (prev.state === 'away' && newState === 'online') {
+          await this.flushQueue(ws)
+        }
+        break
+      }
+
+      case 'presence_query': {
+        if (!isValidAddress(msg.address)) {
+          ws.send(JSON.stringify({ type: 'error', error: 'Invalid address' }))
+          break
+        }
+        const queryAddr = (msg.address as string).toLowerCase()
+        const queryId = this.env.AGENT_MAILBOX.idFromName(queryAddr)
+        const queryStub = this.env.AGENT_MAILBOX.get(queryId)
+        try {
+          const resp = await queryStub.fetch(new Request('https://internal/presence'))
+          const result = (await resp.json()) as { state: 'online' | 'away'; message: string | null }
+          ws.send(JSON.stringify({
+            type: 'presence_response',
+            address: queryAddr,
+            state: result.state,
+            message: result.message,
+          }))
+        } catch {
+          ws.send(JSON.stringify({
+            type: 'presence_response',
+            address: queryAddr,
+            state: 'online',
+            message: null,
+          }))
         }
         break
       }

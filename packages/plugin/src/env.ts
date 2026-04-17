@@ -1,8 +1,9 @@
-import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts'
 import { STATE_DIR_NAME, ENV_FILE_NAME, DEFAULT_RELAY_URL, PEERS_DIR_NAME, SESSIONS_DIR_NAME } from '@attn/shared/constants'
+import type { PresenceState } from './state.js'
 
 export function getStateDir(): string {
   return process.env.ATTN_STATE_DIR ?? join(homedir(), '.claude', 'channels', STATE_DIR_NAME)
@@ -52,6 +53,31 @@ export function getPeersDir(): string {
 
 export function getSessionDbDir(sessionName: string): string {
   return join(getStateDir(), SESSIONS_DIR_NAME, sessionName)
+}
+
+function getPresenceFilePath(): string {
+  const session = getSessionName()
+  const dir = session ? getSessionDbDir(session) : getStateDir()
+  mkdirSync(dir, { recursive: true })
+  return join(dir, 'presence.json')
+}
+
+export function loadPresence(): { state: PresenceState; message: string | null; setAt: number } | null {
+  const path = getPresenceFilePath()
+  if (!existsSync(path)) return null
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf8')) as { state: PresenceState; message: string | null; setAt: number }
+    if (data.state !== 'online' && data.state !== 'away') return null
+    return data
+  } catch {
+    return null
+  }
+}
+
+export function savePresence(state: PresenceState, message: string | null): void {
+  const path = getPresenceFilePath()
+  const data = { state, message, setAt: Date.now() }
+  writeFileSync(path, JSON.stringify(data))
 }
 
 export function loadEnvFile(): void {
