@@ -174,7 +174,16 @@ export function connectToRelay(relayUrl: string, onInbound: OnInbound): void {
         try {
           const signature = await state.account!.signMessage({ message: msg.nonce })
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'auth', address: state.address, signature }))
+            // Include persisted presence in the auth payload so the relay can
+            // commit our state atomically before deciding whether to flush
+            // the queue. A v0.6.0 server just ignores unknown fields.
+            ws.send(JSON.stringify({
+              type: 'auth',
+              address: state.address,
+              signature,
+              presence: state.presence,
+              presence_message: state.presenceMessage,
+            }))
           } else {
             forceReconnect(ws, `socket closed during challenge signing (state ${ws.readyState})`)
           }
@@ -781,6 +790,7 @@ export function setPresence(newState: PresenceState, message: string | null): vo
   }
 
   savePresence(newState, message)
+  writeStatusFile()
 
   if (isRelayReady()) {
     try {

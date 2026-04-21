@@ -1,5 +1,5 @@
 export const CHANNEL_NAME = 'attn'
-export const CHANNEL_VERSION = '0.6.0'
+export const CHANNEL_VERSION = '0.6.1'
 export const DEFAULT_RELAY_URL = 'wss://attn.s0nderlabs.xyz/ws'
 export const STATE_DIR_NAME = 'attn'
 export const HISTORY_DB_NAME = 'history.db'

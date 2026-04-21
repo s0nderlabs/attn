@@ -15,7 +15,7 @@ export type ServerMessage =
 
 // Client → Server
 export type ClientMessage =
-  | { type: 'auth'; address: string; signature: string }
+  | { type: 'auth'; address: string; signature: string; presence?: 'online' | 'away'; presence_message?: string | null }
   | { type: 'message'; id: string; to: string; encrypted: string; signature: string }
   | { type: 'reaction'; id: string; to: string; message_id: string; encrypted: string; signature: string }
   | { type: 'get_key'; address: string }

@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.1] - 2026-04-21
+
+### Fixed
+
+- Away-mode startup race on the relay. Previously, `auth_ok` called `flushQueue` unconditionally, meaning a freshly-connected client with persisted `away` would drain its queue during the narrow window between auth_ok and the follow-up `presence_set: away` re-assert. Any message landing in that window would fire live despite the user being locally away. Symptom in the wild: main session sat at `away` for 2h+ but a single early inbound message fired as a live channel notification while later messages correctly queued. Fix has two parts: (1) the `auth` payload now carries an atomic `presence` hint which the relay commits BEFORE the flush decision, and (2) `auth_ok` now only flushes when the stored presence is `online`. An away user's queue persists across reconnects until they explicitly flip back to `online`.
+- Persisted `away` state was invisible — users could inherit away mode from a prior session with no UI signal, silently accumulating a relay queue. Plugin now emits a one-time system channel notification at MCP attach time if loaded presence is `away`, telling the user how to flip back.
+
+### Added
+
+- Statusline indicators: status file snapshot now includes `presence: 'online'|'away'` and `globalMute: boolean`. The reference `statusline.sh` renders a compact `[away]` badge (orange — needs attention) and `[muted]` badge (purple — less dangerous) next to the attn connection indicator. Per-agent and per-group mutes deliberately stay tool-only to avoid statusline noise for deliberate targeted suppression.
+- Status file writes now trigger on `setPresence` and on global mute/unmute so the statusline reflects state changes immediately instead of waiting for the 60s heartbeat.
+
+### Changed
+
+- Auth payload (`ClientMessage`): now carries optional `presence` + `presence_message` fields. Legacy 0.6.0 relays ignore them; legacy 0.6.0 clients just keep working because the relay falls back to stored state when the hint is absent.
+- `connectMcp` hydrates persisted presence into `state.presence` BEFORE MCP transport connects, so the first status-file heartbeat and the auth handshake both see the true state. `ws.ts` still re-runs `loadPresence` on every `auth_ok` as a defensive re-sync.
+
 ## [0.6.0] - 2026-04-17
 
 ### Added
@@ -358,6 +375,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 [0.4.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.4.0
 [0.3.5]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.5
 [0.3.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.4
+[0.6.1]: https://github.com/s0nderlabs/attn/releases/tag/v0.6.1
 [0.6.0]: https://github.com/s0nderlabs/attn/releases/tag/v0.6.0
 [0.3.3]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.3
 [0.3.2]: https://github.com/s0nderlabs/attn/releases/tag/v0.3.2

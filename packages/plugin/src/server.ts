@@ -50,8 +50,8 @@ import {
 import type { MuteKind } from './history.js'
 import { requestKey, requestResolve, requestPresence, setPresence, setAwayNotifier, setAwaySummaryNotifier } from './ws.js'
 import type { PresenceState } from './state.js'
-import { isRelayReady, getRelayStatus, getSessionType } from './status.js'
-import { getRelayHttpUrl, getInboxDir } from './env.js'
+import { isRelayReady, getRelayStatus, getSessionType, writeStatusFile } from './status.js'
+import { getRelayHttpUrl, getInboxDir, loadPresence } from './env.js'
 import { getLocalPeers, getLocalPeer, sendLocal } from './local.js'
 import type { LocalMessage } from './local.js'
 import { createPublicClient, createWalletClient, http, formatEther, zeroAddress } from 'viem'
@@ -1229,6 +1229,7 @@ async function handleMute(target: string, duration?: string) {
   // Global "mute everything" — separate primitive from per-target mute
   if (isGlobalMuteTarget(target)) {
     addMuteAll(untilMs)
+    writeStatusFile()
     const durText = untilMs ? ` for ${formatDurationRemaining(untilMs - Date.now())}` : ' indefinitely'
     return {
       content: [{
@@ -1264,6 +1265,7 @@ async function handleUnmute(target: string) {
     }
     const count = countAllInboundSince(mutedSince)
     removeMuteAll()
+    writeStatusFile()
     const summary = count > 0
       ? ` — ${count} message${count === 1 ? '' : 's'} arrived across all peers while muted (use history to read)`
       : ''
@@ -1752,6 +1754,14 @@ function addContactAndDeliverPending(address: string, name?: string): number {
 }
 
 export async function connectMcp() {
+  // Hydrate persisted presence before connecting MCP so the startup hint and
+  // the first status-file heartbeat see the true state, not the 'online' default.
+  const persisted = loadPresence()
+  if (persisted) {
+    state.presence = persisted.state
+    state.presenceMessage = persisted.message
+  }
+
   // Resolve agent identity for instructions
   let identityLine = `Your address: ${state.address}`
   try {
@@ -1767,43 +1777,58 @@ export async function connectMcp() {
   const mcp = createServer(identityLine)
   await mcp.connect(transport)
 
+  // Local helper: emit a system-level channel notification. Shared by the
+  // away-notifier, away-summary-notifier, and the startup away hint.
+  const notifySystem = (content: string, agentId: string, user: string, label: string): void => {
+    mcp.notification({
+      method: 'notifications/claude/channel',
+      params: {
+        content,
+        meta: {
+          agent_id: agentId,
+          user,
+          ts: new Date().toISOString(),
+          trust: 'system',
+        },
+      },
+    }).catch((err) => {
+      process.stderr.write(`attn: failed to deliver ${label}: ${err}\n`)
+    })
+  }
+
   // Hook ws.ts notifier callbacks so away-status UX can emit context notifications
   // without ws.ts importing MCP transport.
   setAwayNotifier((to: string, awayMessage: string | null) => {
     const name = getContactName(to) ?? to
     const suffix = awayMessage ? `: "${awayMessage}"` : ''
-    mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content: `${name} is away${suffix}. Your message is queued and will deliver when they return.`,
-        meta: {
-          agent_id: to,
-          user: name,
-          ts: new Date().toISOString(),
-          trust: 'system',
-        },
-      },
-    }).catch((err) => {
-      process.stderr.write(`attn: failed to deliver away notice: ${err}\n`)
-    })
+    notifySystem(
+      `${name} is away${suffix}. Your message is queued and will deliver when they return.`,
+      to,
+      name,
+      'away notice',
+    )
   })
 
   setAwaySummaryNotifier((count: number) => {
-    mcp.notification({
-      method: 'notifications/claude/channel',
-      params: {
-        content: `${count} message${count === 1 ? '' : 's'} delivered while you were away — use history to read them.`,
-        meta: {
-          agent_id: state.address,
-          user: 'attn',
-          ts: new Date().toISOString(),
-          trust: 'system',
-        },
-      },
-    }).catch((err) => {
-      process.stderr.write(`attn: failed to deliver away-return summary: ${err}\n`)
-    })
+    notifySystem(
+      `${count} message${count === 1 ? '' : 's'} delivered while you were away — use history to read them.`,
+      state.address,
+      'attn',
+      'away-return summary',
+    )
   })
+
+  // One-time hint if we booted into away mode. Without this, users can forget
+  // they set away in a prior session and silently accumulate a relay queue.
+  if (state.presence === 'away') {
+    const suffix = state.presenceMessage ? `: "${state.presenceMessage}"` : ''
+    notifySystem(
+      `You're in away mode${suffix} (persisted from a prior session). Incoming messages are queued at the relay and won't surface until you flip back. Run status("online") to resume live delivery.`,
+      state.address,
+      'attn',
+      'persisted-away hint',
+    )
+  }
 
   return mcp
 }

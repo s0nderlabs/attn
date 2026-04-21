@@ -307,8 +307,30 @@ export class AgentMailbox extends DurableObject<Env> {
         address: address.toLowerCase(),
       } satisfies WsAttachment)
 
+      // Atomic presence hint: a v0.6.1+ client sends its persisted presence
+      // alongside auth so we can commit it BEFORE the flush decision. Closes
+      // the startup race where a message landing between auth_ok's flush and
+      // a follow-up presence_set:away would fire live despite the user being
+      // away. Legacy clients omit this field and we fall back to stored state.
+      const presenceHint = msg.presence as 'online' | 'away' | undefined
+      let effectiveState: 'online' | 'away'
+      if (presenceHint === 'online' || presenceHint === 'away') {
+        const hintMsg = typeof msg.presence_message === 'string'
+          ? (msg.presence_message as string).slice(0, 200)
+          : null
+        this.setPresence(presenceHint, hintMsg)
+        effectiveState = presenceHint
+      } else {
+        effectiveState = this.getPresence().state
+      }
+
       ws.send(JSON.stringify({ type: 'auth_ok', address: address.toLowerCase() }))
-      await this.flushQueue(ws)
+      // Only flush on auth_ok when presence is online. If the user is away,
+      // the queue should persist until they explicitly flip back — otherwise
+      // every reconnect accidentally drains the backlog they're trying to hold.
+      if (effectiveState === 'online') {
+        await this.flushQueue(ws)
+      }
       return
     }
 

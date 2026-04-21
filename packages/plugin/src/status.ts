@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { state } from './state.js'
 import { getStatusDir, isExternalEnabled } from './env.js'
 import { getLocalPeers } from './local.js'
+import { isAllMuted } from './history.js'
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null
 let shuttingDown = false
@@ -110,6 +111,8 @@ function writeStatusFileInternal(force: boolean): void {
       sessionType: getSessionType(),
       relay: getRelayStatus(),
       localPeers: getLocalPeers().length,
+      presence: state.presence,
+      globalMute: isAllMuted(),
     })
     if (!force && snapshot === lastWrittenPayload) return
     lastWrittenPayload = snapshot
