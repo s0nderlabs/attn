@@ -16,22 +16,28 @@ let cachedStatusPath: string | null = null
 // same ws. Consumers treat the file as state-snapshot, not a timestamp log.
 let lastWrittenPayload: string | null = null
 
-// Walk up the process tree from process.ppid to find the Claude Code binary.
-// Context: Claude Code spawns MCP servers via `.mcp.json`, and the attn
-// plugin is invoked as `bun run --cwd ... start` which spawns the actual
-// `bun index.ts` as a child — adding a wrapper layer. So process.ppid
-// returns the `bun run` PID, not the claude binary PID. The statusline
-// script runs as a direct child of claude (via `bash ~/.claude/statusline.sh`),
-// so its $PPID IS the claude binary. For the two sides to find each other's
-// file, the plugin needs to walk past the `bun run` wrapper.
+// Walk up the process tree from process.ppid to find this session's Claude
+// Code process. Two layouts to handle:
+//
+//   Interactive: bun(plugin) -> bun(wrapper) -> claude (user's binary, comm=`claude`)
+//   Background : bun(plugin) -> bun(wrapper) -> 2.1.139(bg-spare, unique-per-session,
+//                comm=`<version>`) -> 2.1.139(pty-host) -> claude(supervisor daemon,
+//                comm=`claude`, SHARED across all bg sessions)
+//
+// The bg-spare process is invoked via the version-pinned binary path
+// (/Users/.../share/claude/versions/<X.Y.Z>), so its comm is the version
+// string itself. If we only match `claude`, every bg session walks past its
+// unique-per-session spare and lands on the shared supervisor daemon — so
+// they all stomp on the same `status/<daemon-pid>.json` file. Matching the
+// version-named binary as well stops the walker at the bg-spare, which is
+// unique per bg session.
 //
 // Fallback: on Windows (no ps), or if the walker fails, use process.ppid.
-// Worst case this re-introduces the v0.5.10 bug but doesn't break anything.
 function findClaudeCodePid(): number {
   if (process.platform === 'win32') return process.ppid
   try {
     let pid = process.ppid
-    for (let depth = 0; depth < 5; depth++) {
+    for (let depth = 0; depth < 6; depth++) {
       const out = execSync(`ps -o ppid=,comm= -p ${pid}`, { stdio: ['pipe', 'pipe', 'ignore'] })
         .toString()
         .trim()
@@ -39,7 +45,7 @@ function findClaudeCodePid(): number {
       if (!m) break
       const parentPid = parseInt(m[1], 10)
       const comm = m[2]
-      if (/(?:^|\/)claude$/.test(comm)) return pid
+      if (/(?:^|\/)claude$/.test(comm) || /(?:^|\/)\d+\.\d+\.\d+$/.test(comm)) return pid
       if (!Number.isFinite(parentPid) || parentPid <= 1) break
       pid = parentPid
     }

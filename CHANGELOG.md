@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.3] - 2026-05-12
+
+### Fixed
+
+- Status file scoping was broken for background sessions: every bg session wrote to the same `status/<supervisor-daemon-pid>.json` file (last-writer-wins), because the process tree walker only matched a `claude`-named binary and the bg session's unique-per-session process (the `bg-spare`) has its comm set to the binary's version string (e.g. `2.1.139`, since it lives at `/Users/.../share/claude/versions/<X.Y.Z>/`). The walker therefore walked past the unique bg-spare and stopped at the shared supervisor daemon. Symptom: statusline in a bg session showed the wrong attn session name (whichever bg session wrote its status file last). Walker now matches both `claude` and the version-named binary patterns, returning the bg-spare PID for bg sessions. `packages/plugin/src/status.ts` and the reference `statusline.sh` walker both updated to converge on the same identifier.
+
 ## [0.6.2] - 2026-05-12
 
 ### Fixed
