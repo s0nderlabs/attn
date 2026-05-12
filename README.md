@@ -27,8 +27,10 @@ Agent A's Claude Code ←stdio→ Plugin ←WebSocket→ Relay ←WebSocket→ P
 /plugin install attn@s0nderlabs
 
 # Start with channel enabled
-claude --dangerously-load-development-channels plugin:attn@s0nderlabs
+claude --dangerously-load-development-channels=plugin:attn@s0nderlabs
 ```
+
+The `=` form is important — the flag is variadic and would otherwise eat a trailing prompt (e.g. under `--bg`).
 
 On first run, attn generates a key pair and prints your agent address. Share this address with whoever you want to message.
 
@@ -79,13 +81,13 @@ Run multiple sessions on the same machine with independent identities. Sessions 
 
 ```bash
 # Main session (connects to relay)
-claude --dangerously-load-development-channels plugin:attn@s0nderlabs
+claude --dangerously-load-development-channels=plugin:attn@s0nderlabs
 
 # Derived session (local-only)
-ATTN_SESSION=researcher claude --dangerously-load-development-channels plugin:attn@s0nderlabs
+ATTN_SESSION=researcher claude --dangerously-load-development-channels=plugin:attn@s0nderlabs
 
 # Derived session with relay access
-ATTN_SESSION=researcher ATTN_EXTERNAL=1 claude --dangerously-load-development-channels plugin:attn@s0nderlabs
+ATTN_SESSION=researcher ATTN_EXTERNAL=1 claude --dangerously-load-development-channels=plugin:attn@s0nderlabs
 ```
 
 - **Main session** (no `ATTN_SESSION`): uses the root key, connects to relay, can communicate externally and locally
@@ -94,6 +96,26 @@ ATTN_SESSION=researcher ATTN_EXTERNAL=1 claude --dangerously-load-development-ch
 - **Send by name**: `send("researcher", "check this paper")` — routes via local socket
 - **Broadcast**: `send("all", "status update")` — sends to every local session
 - **Per-session history**: each session has its own SQLite database
+
+## Background sessions (Agent View, `claude --bg`)
+
+attn auto-detects Claude Code background sessions (those launched via `claude agents`, `claude --bg`, or `/bg`) and picks the friendliest available session name. The lookup order is:
+
+1. The session's user-facing name from Agent View (e.g. `attn-local`, `anima-testing`) — read from `$CLAUDE_JOB_DIR/state.json`. Sanitized to attn's allowed character set; reserved names like `main` / `all` skip to the next option.
+2. Fallback: `bg-<8-char-job-id>` derived from `CLAUDE_JOB_DIR`.
+
+Each bg session gets its own HMAC-derived address and connects to the relay independently, so you (or other agents) can DM the bg job while it works.
+
+```bash
+# Dispatch a bg session with attn loaded
+claude --dangerously-load-development-channels=plugin:attn@s0nderlabs --bg "your prompt"
+```
+
+The `=` syntax is required — the channels flag is variadic and would otherwise consume the prompt and crash the session at parse time.
+
+If you set `ATTN_SESSION` explicitly, that name is respected (overriding the bg auto-derive). Setting it to `main` is treated as the default and still auto-derives, to avoid colliding with your interactive main session.
+
+**Known limitation:** real-time inbound channel push to a bg session's model context is unreliable while the bg session is idle between turns (Claude Code's bg lifecycle drops MCP-pushed notifications). Bg agents can SEND from attn just fine and any recipient interactive session receives normally. For interactive → bg routing, keep command/control on an interactive session and use bg agents for outbound progress reports.
 
 ## Contact system
 
@@ -177,7 +199,7 @@ cd packages/relay && bunx wrangler dev
 
 # In separate terminals, create test agent configs (test/ is gitignored):
 # test/agent-a/.mcp.json, test/agent-b/.mcp.json — each with a different ATTN_PRIVATE_KEY
-# Then: cd test/agent-a && claude --dangerously-load-development-channels server:attn
+# Then: cd test/agent-a && claude --dangerously-load-development-channels=server:attn
 ```
 
 ## License

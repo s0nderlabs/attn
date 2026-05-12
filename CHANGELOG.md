@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.2] - 2026-05-12
+
+### Fixed
+
+- Plugin crashed at startup inside Claude Code Agent View / `claude --bg` background sessions, leaving the MCP server in a ❌ failed state with zero attn tools available. Root cause: the supervisor maintains a warm spare pool of bg processes whose env is frozen at supervisor-start time, so any `ATTN_SESSION` set in the caller's shell never reaches the dispatched session. Every bg session therefore defaulted to session name `main` and collided with the interactive main session on `checkDuplicateSession`, exiting 1 before MCP init. attn now detects bg context via `CLAUDE_CODE_SESSION_KIND="bg"` / `CLAUDE_JOB_DIR` (both unconditionally set by Claude Code 2.1.139+'s supervisor, verified by binary disassembly of the `ekK` env-builder) and auto-derives a unique session name from the supervisor's friendly job name (e.g. `attn-local`, `anima-testing`) read out of `$CLAUDE_JOB_DIR/state.json`, falling back to `bg-<8-char-job-id>` when no name is set. Names like `main` and `all` are skipped to avoid reserved-name collisions. Explicit `ATTN_SESSION=foo` is still respected; `ATTN_SESSION=main` in bg context is overridden to avoid the collision.
+
+### Added
+
+- Auto-derived bg sessions connect to the relay (joining the existing main / `ATTN_EXTERNAL=1` allow-list) so the bg agent is reachable as a separate addressable identity for the duration of the job. Each bg session gets a distinct HMAC-derived address from the user's root key, so the relay sees them as separate agents.
+- Plugin stderr now appends a `[bg]` tag on the startup `attn: session "..." address ...` line when running inside a bg session, so operators can tell from logs which lifecycle the plugin is in.
+- README "Background sessions (Agent View, `claude --bg`)" section documents the auto-derive behavior and the variadic-flag `=` syntax requirement (`--dangerously-load-development-channels=plugin:attn@s0nderlabs`); without `=` the flag would consume the `--bg` prompt argument and crash the session at CLI parse time. All existing README invocation examples updated to use the `=` form.
+
+### Known limitation
+
+- Real-time inbound channel push (`<channel source="attn">`) does NOT reliably reach a bg session's model context during its `done`/`idle` state. The plugin still receives, decrypts, and persists the message in the bg session's history DB, but Claude Code's bg lifecycle drops MCP-pushed notifications between turns (verified by binary disassembly of the `f$` queue + `fY()` injection path: channel events with `mode: "prompt"`, `origin.kind: "channel"` push into the same queue as `task-notification`s, but the bg session's next-turn drain doesn't surface them). Bg agents can SEND from attn fine and recipient interactive sessions receive normally; reverse direction (interactive → bg) needs an upstream Claude Code fix. Workaround for now: route command/control through an interactive session and let bg agents emit progress reports back.
+
 ## [0.6.1] - 2026-04-21
 
 ### Fixed

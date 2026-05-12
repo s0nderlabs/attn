@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { resolvePrivateKey, getRelayUrl, getInboxDir, getSessionName, isExternalEnabled } from './src/env.js'
+import { resolvePrivateKey, getRelayUrl, getInboxDir, getSessionName, isExternalEnabled, isBgSession } from './src/env.js'
 import { deriveIdentity, deriveSessionKey } from './src/crypto.js'
 import { initDb, expirePending, getAllKeyCache, saveMessage, saveReaction } from './src/history.js'
 import { state } from './src/state.js'
@@ -35,7 +35,8 @@ state.address = address
 state.account = account
 state.sessionName = sessionName
 
-process.stderr.write(`attn: session "${effectiveName}" address ${address}\n`)
+const inBg = isBgSession()
+process.stderr.write(`attn: session "${effectiveName}" address ${address}${inBg ? ' [bg]' : ''}\n`)
 
 // 2. Initialize DB + maintenance
 initDb()
@@ -97,8 +98,8 @@ const localServer = startLocalServer(effectiveName, (msg: LocalMessage) => {
 })
 state.localServer = localServer
 
-// 5. Connect to relay (main session or ATTN_EXTERNAL=1)
-if (!state.sessionName || isExternalEnabled()) {
+// 5. Connect to relay (main session, ATTN_EXTERNAL=1, or auto-derived bg session)
+if (!state.sessionName || isExternalEnabled() || inBg) {
   const relayUrl = getRelayUrl()
   connectToRelay(relayUrl, (from, plaintext, id, ts, trust?, agentName?, groupId?, groupName?, reactionMessageId?) => {
     notifyInbound(mcp, from, plaintext, id, ts, trust, agentName, groupId, groupName, reactionMessageId)

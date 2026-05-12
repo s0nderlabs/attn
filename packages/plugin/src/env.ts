@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, basename } from 'path'
 import { homedir } from 'os'
 import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts'
 import { STATE_DIR_NAME, ENV_FILE_NAME, DEFAULT_RELAY_URL, PEERS_DIR_NAME, SESSIONS_DIR_NAME } from '@attn/shared/constants'
@@ -30,8 +30,53 @@ export function getStatusDir(): string {
   return dir
 }
 
+export function isBgSession(): boolean {
+  // Claude Code's supervisor sets CLAUDE_CODE_SESSION_KIND="bg" on every bg
+  // session spawn (verified in claude binary v2.1.139). CLAUDE_JOB_DIR is the
+  // companion var that gives us the job id.
+  return process.env.CLAUDE_CODE_SESSION_KIND === 'bg' || Boolean(process.env.CLAUDE_JOB_DIR)
+}
+
+function deriveBgSessionName(): string | null {
+  const jobDir = process.env.CLAUDE_JOB_DIR
+  if (!jobDir) return null
+
+  // Prefer the user-facing name from the supervisor's state.json (e.g.
+  // "attn-local", "anima-testing"). CLAUDE_CODE_SESSION_NAME env var is
+  // unreliable: empty when the user renames via /agents Ctrl+R, since the
+  // supervisor seeds it once at spawn.
+  try {
+    const data = JSON.parse(readFileSync(join(jobDir, 'state.json'), 'utf8')) as { name?: string }
+    if (typeof data?.name === 'string') {
+      const sanitized = data.name
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .replace(/-+/g, '-')
+        .slice(0, 48)
+      // Skip names that would collide with reserved/interactive identifiers.
+      if (sanitized.length >= 2 && sanitized !== 'main' && sanitized !== 'all') {
+        return sanitized
+      }
+    }
+  } catch {}
+
+  return `bg-${basename(jobDir).slice(0, 8)}`
+}
+
 export function getSessionName(): string | null {
   const session = process.env.ATTN_SESSION
+
+  // Bg context with no explicit ATTN_SESSION (or "main") auto-derives a unique
+  // name. The supervisor's spare-pool freezes its env at supervisor-start, so
+  // caller-set ATTN_SESSION never reaches the dispatched session. Without this
+  // override every bg session would default to "main" and collide with the
+  // interactive main session, killing the plugin on duplicate-session check.
+  if (isBgSession() && (!session || session === 'main')) {
+    const derived = deriveBgSessionName()
+    if (derived) return derived
+  }
+
   if (!session || session === 'main') return null
   if (session === 'all') {
     throw new Error('"all" is reserved for local broadcast. Use a different ATTN_SESSION name.')
