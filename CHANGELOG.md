@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.6.4] - 2026-05-19
+
+### Fixed
+
+- Plugin permanently broke for every new Claude Code session whenever multiple sessions started with `-attn` simultaneously. Root cause: the old `start` script ran `bun install` in parallel against the shared `~/.claude/plugins/cache/.../attn/<version>/node_modules`, and concurrent installs raced inside Bun's content-addressed `.bun/` store. The race left package directories present but missing their `dist/cjs` and `dist/esm` subdirs (mid-extraction overwrite by a peer process). Subsequent `bun install` calls then no-op'd because the lockfile matched what's in `.bun/`, so the broken state was permanent until the directory was nuked. Visible symptom: `Failed to reconnect to plugin:attn:attn: -32000` on every new session, while older long-lived sessions that had already loaded viem stayed working (their viem code was resident in memory).
+
+### Changed
+
+- Replaced the `start` script's naive `bun install || (rm -rf && bun install)` with a dedicated `bootstrap.ts` that (1) verifies install health by actually importing viem, eciesjs, and the MCP SDK subpaths the plugin uses, (2) serializes recovery across concurrent claudes via an atomic-mkdir lock with stale-PID and 10-minute-old-timestamp reclamation, and (3) writes a `node_modules/.attn-install-ok` marker on success so subsequent starts hit a sub-50ms fast path. Verified with 6-way concurrent boot tests against a corrupted cache: one process performs the install, five wait and resume cleanly, zero `-32000` errors. The lock auto-recovers from killed installers; install attempts have a 5-minute timeout so they can never block plugin start indefinitely.
+
+### Added
+
+- Best-effort stale sweep of `~/.claude/plugins/cache/.../attn/<version>/.in_use/` and `~/.claude/channels/attn/status/` runs only on the install-path (not the fast path) to keep maintenance cost off plugin startup. Cleans per-PID entries left behind by Claude Code sessions that never released their refcount.
+
 ## [0.6.3] - 2026-05-12
 
 ### Fixed
@@ -381,6 +395,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Test configs for running two agents locally with different identities
 - Shared types package with WebSocket message protocol definitions
 
+[0.6.4]: https://github.com/s0nderlabs/attn/releases/tag/v0.6.4
 [0.5.11]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.11
 [0.5.10]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.10
 [0.5.9]: https://github.com/s0nderlabs/attn/releases/tag/v0.5.9
