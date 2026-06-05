@@ -13,6 +13,7 @@ export interface DaemonState {
   lastInboundFrom: string | null;
   lastInboundMessageId: string | null;
   pendingKeyRequests: Map<string, Array<(key: string | null) => void>>;
+  pendingPresenceRequests: Map<string, Array<(res: { state: 'online' | 'away'; message: string | null } | null) => void>>;
   presence: PresenceState;
 }
 
@@ -27,6 +28,7 @@ export const state: DaemonState = {
   lastInboundFrom: null,
   lastInboundMessageId: null,
   pendingKeyRequests: new Map<string, Array<(key: string | null) => void>>(),
+  pendingPresenceRequests: new Map(),
   presence: 'online',
 };
 

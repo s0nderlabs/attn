@@ -417,7 +417,16 @@ export function connectToRelay(
         break;
       }
 
-      case 'presence_response':
+      case 'presence_response': {
+        const addr = msg.address;
+        const cbs = state.pendingPresenceRequests.get(addr);
+        if (cbs) {
+          state.pendingPresenceRequests.delete(addr);
+          for (const cb of cbs) cb({ state: msg.state, message: msg.message });
+        }
+        break;
+      }
+
       case 'received':
       case 'delivered':
       case 'delivery_status':
@@ -533,6 +542,45 @@ export function requestKey(address: string): Promise<string | null> {
         }
       }, 10000);
       keyTimeouts.set(addr, timeout);
+    }
+  });
+}
+
+// --- Presence request ---
+
+const presenceTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function requestPresence(
+  address: string,
+): Promise<{ state: 'online' | 'away'; message: string | null } | null> {
+  if (!isRelayReady()) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    const addr = address.toLowerCase();
+    const existing = state.pendingPresenceRequests.get(addr) ?? [];
+    existing.push(resolve);
+    state.pendingPresenceRequests.set(addr, existing);
+
+    if (existing.length === 1 && isRelayReady()) {
+      try {
+        state.relayWs!.send(
+          JSON.stringify({ type: 'get_presence', address: addr }),
+        );
+      } catch (err) {
+        state.pendingPresenceRequests.delete(addr);
+        resolve(null);
+        return;
+      }
+
+      const timeout = setTimeout(() => {
+        presenceTimeouts.delete(addr);
+        const cbs = state.pendingPresenceRequests.get(addr);
+        if (cbs) {
+          state.pendingPresenceRequests.delete(addr);
+          for (const cb of cbs) cb(null);
+        }
+      }, 10_000);
+      presenceTimeouts.set(addr, timeout);
     }
   });
 }

@@ -7,3 +7,5 @@ export const ENV_FILE_NAME = '.env';
 export const PEERS_DIR_NAME = 'peers';
 export const SESSIONS_DIR_NAME = 'sessions';
 export const DAEMON_PORT = 9742;
+export const ATTN_NAMES_ADDRESS = '0x5caDD2F7d8fC6B35bb220cC3DB8DBc187E02dC7A';
+export const BASE_RPC_DEFAULT = 'https://mainnet.base.org';

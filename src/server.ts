@@ -16,8 +16,9 @@ import {
   getKeyCache,
   saveOutbox,
 } from './db.js';
-import { requestKey } from './relay.js';
+import { requestKey, requestPresence } from './relay.js';
 import { DAEMON_PORT } from './constants.js';
+import { handleRegisterName, handleLookup } from './attn-names.js';
 
 // --- Connected pi clients ---
 
@@ -210,6 +211,56 @@ async function handleRequest(
       const address = path.slice('/contacts/'.length);
       removeContact(address);
       return sendJson(res, { status: 'removed', address });
+    }
+
+    // POST /register-name — { label }
+    if (req.method === 'POST' && path === '/register-name') {
+      const body = await parseBody(req);
+      const { label } = JSON.parse(body) as { label: string };
+
+      if (!label) {
+        return sendError(res, 'label is required');
+      }
+
+      const result = await handleRegisterName(label);
+      return sendJson(res, result, result.success ? 200 : 400);
+    }
+
+    // GET /lookup?name=X
+    if (req.method === 'GET' && path === '/lookup') {
+      const name = url.searchParams.get('name');
+
+      if (!name) {
+        return sendError(res, 'name parameter is required');
+      }
+
+      const result = await handleLookup(name);
+      return sendJson(res, result, result.success ? 200 : 404);
+    }
+
+    // GET /presence?address=X
+    if (req.method === 'GET' && path === '/presence') {
+      const address = url.searchParams.get('address');
+
+      if (!address) {
+        return sendError(res, 'address parameter is required');
+      }
+
+      if (!isRelayReady()) {
+        return sendError(res, 'Not connected to relay', 503);
+      }
+
+      const result = await requestPresence(address);
+      if (!result) {
+        return sendJson(res, { address, online: false, status: 'unknown' });
+      }
+
+      return sendJson(res, {
+        address: address.toLowerCase(),
+        online: result.state === 'online',
+        status: result.state,
+        message: result.message,
+      });
     }
 
     // GET /status
