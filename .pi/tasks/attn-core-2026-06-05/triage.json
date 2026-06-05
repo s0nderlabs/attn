@@ -1,0 +1,7 @@
+{
+  "task_slug": "attn-core-build",
+  "level": "L2",
+  "scope": "Build attn-core daemon (Node.js) + attn-pi extension — encrypted agent messaging via existing relay",
+  "created": "2026-06-05T16:00:00+07:00",
+  "signoff": false
+}
